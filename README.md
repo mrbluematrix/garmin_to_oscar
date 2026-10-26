@@ -1,5 +1,10 @@
-UPDATE:
-for non geek: online version (you have to download manualy your garmin fit.): https://mrbluematrix.github.io/garmin_to_oscar/
+# UPDATE:
+for non geek: easy online version (you have to manualy export your garmin health fit data from: 
+https://connect.garmin.com/app/settings/accountInformation
+(at bottom)
+
+then upload to:
+https://mrbluematrix.github.io/garmin_to_oscar/
 
 # garmin2oscar
 
