@@ -14,7 +14,7 @@ done.
 
 # garmin2oscar
 
-Import the overnight **SpO2 and pulse** recorded by a Garmin watch into
+Import the overnight **SpO2, pulse, motions, sleep stages** recorded by a Garmin watch into
 [OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
 
 OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
