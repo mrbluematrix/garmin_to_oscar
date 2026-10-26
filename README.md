@@ -12,7 +12,7 @@ done.
 # garmin2oscar
 <img width="2034" height="1048" alt="graph_pules_motion" src="https://github.com/user-attachments/assets/9abb0149-c313-4842-aa85-c65eb46b2148" />
 
-Import the overnight **SpO2 and pulse** recorded by a Garmin watch into
+Import the overnight **SpO2 ,pulse, motions** recorded by a Garmin watch into
 [OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
 
 OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
