@@ -6,7 +6,7 @@ https://connect.garmin.com/app/settings/accountInformation
 then upload to:
 https://mrbluematrix.github.io/garmin_to_oscar/
 
-then import to OSCAR
+then unzip & import to OSCAR
 done.
 
 # garmin2oscar
