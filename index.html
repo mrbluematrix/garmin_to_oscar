@@ -241,6 +241,9 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <div class="inline">
         <label><input type="checkbox" id="withCsv" checked> <span>Include a readable .csv for each night</span></label>
       </div>
+      <div class="inline" id="stagesOption">
+        <label><input type="checkbox" id="withStages" checked> <span>Include sleep stages <small>Deep, light, REM and awake, as one file for “Import Dreem data”.</small></span></label>
+      </div>
       <div class="inline">
         <label for="fromDate">Only nights from</label>
         <input type="date" id="fromDate">
@@ -269,6 +272,7 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <li>Pick one .dat file from the <b>md300</b> folder and choose “use the oximeter’s internal clock”. Repeat for each night.</li>
       <li>If you abandon an import halfway, restart OSCAR before the next one.</li>
     </ol>
+    <p id="stagesStep" class="hidden">Sleep stages: in OSCAR, choose <b>Import Dreem data</b> and pick <b>garmin_sleep_stages.csv</b> in the <b>oscar_dreem</b> folder. Nights already imported are skipped, and OSCAR shows a sleep-stage graph.</p>
   </section>
 
   <footer>
@@ -530,6 +534,120 @@ function motionByte(movement, t) {
   return lvl === undefined ? 0 : Math.max(0, Math.min(255, Math.round(lvl * 10)));
 }
 
+/* ---------- sleep stages -> Dreem CSV (OSCAR: “Import Dreem data”) ---------- */
+const FIT_STAGES = { 0: "NA", 1: "WAKE", 2: "Light", 3: "Deep", 4: "REM" };
+const JSON_STAGES = { 0: "Deep", 1: "Light", 2: "REM", 3: "WAKE" };
+
+/** SLEEP_DATA .fit: each sleep_level message closes the interval begun at the previous one. */
+function extractSleepFit(buf) {
+  const starts = [], stops = [], levels = [];
+  let awakenings = null;
+  parseFit(buf, (g, v) => {
+    if (g === 21 && v[0] === 74 && 253 in v) ((v[1] || 0) === 0 ? starts : stops).push(v[253]);
+    else if (g === 275 && 253 in v && 0 in v) levels.push([v[253], v[0]]);
+    else if (g === 346 && 11 in v) awakenings = v[11];
+  });
+  if (!levels.length) return [];
+  levels.sort((a, b) => a[0] - b[0]);
+  const start = starts.length ? starts[0] : levels[0][0];
+  const stop = stops.length ? stops[stops.length - 1] : levels[levels.length - 1][0];
+  const intervals = [];
+  let prev = start;
+  for (const [t, lvl] of levels) {
+    if (t > prev) intervals.push([prev, Math.min(t, stop), FIT_STAGES[lvl] || "NA"]);
+    prev = Math.max(prev, t);
+  }
+  return intervals.length ? [{ start, stop, intervals, awakenings }] : [];
+}
+
+/** Garmin Connect sleep JSON: every object with a "sleepLevels" list. */
+function extractSleepJson(obj, out, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 5) return;
+  if (Array.isArray(obj)) { obj.forEach((o) => extractSleepJson(o, out, depth + 1)); return; }
+  if (Array.isArray(obj.sleepLevels)) {
+    const intervals = [];
+    for (const it of obj.sleepLevels) {
+      const t0 = gmtToFit(it && it.startGMT), t1 = gmtToFit(it && it.endGMT);
+      const st = typeof it.activityLevel === "number" ? JSON_STAGES[Math.trunc(it.activityLevel)] : undefined;
+      if (t0 !== null && t1 !== null && t1 > t0 && st) intervals.push([t0, t1, st]);
+    }
+    if (intervals.length) {
+      intervals.sort((a, b) => a[0] - b[0]);
+      const dto = obj.dailySleepDTO || {};
+      out.push({ start: intervals[0][0], stop: intervals[intervals.length - 1][1], intervals,
+        awakenings: typeof dto.awakeCount === "number" ? dto.awakeCount : null, fromJson: true });
+    }
+  }
+  for (const k in obj) if (k !== "sleepLevels" && obj[k] && typeof obj[k] === "object") extractSleepJson(obj[k], out, depth + 1);
+}
+
+/** One session per night: JSON preferred, DST evenings start at midnight. */
+function buildStages(sessions) {
+  const byKey = new Map();
+  for (const s of sessions) {
+    const key = dateKey(...eveningOf(s.start));
+    const cur = byKey.get(key);
+    if (!cur || (s.fromJson && !cur.fromJson)) byKey.set(key, s);
+  }
+  const out = [];
+  for (const [key, s0] of byKey) {
+    let s = s0;
+    const [y, m, d] = eveningOfKey(key);
+    if (dayLengthHours(y, m, d) !== 24) {
+      const midnight = Math.round(new Date(y, m, d + 1).getTime() / 1000) - FIT_TO_UNIX;
+      if (s.start < midnight) {
+        const iv = s.intervals.filter((x) => x[1] > midnight).map((x) => [Math.max(x[0], midnight), x[1], x[2]]);
+        if (!iv.length) continue;
+        s = { ...s, start: Math.max(s.start, midnight), intervals: iv, dstTrimmed: true };
+      }
+    }
+    out.push({ ...s, key });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
+function hms(sec) {
+  sec = Math.round(sec);
+  return `${Math.floor(sec / 3600)}:${pad(Math.floor(sec % 3600 / 60))}:${pad(sec % 60)}`;
+}
+function isoOffset(t) {
+  const d = fitToDate(t);
+  const off = -d.getTimezoneOffset(), a = Math.abs(off);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    + `${off < 0 ? "-" : "+"}${pad(Math.floor(a / 60))}:${pad(a % 60)}`;
+}
+function stageAt(iv, t) {
+  for (const [t0, t1, st] of iv) if (t0 <= t && t < t1) return st;
+  return "NA";
+}
+function dreemRow(s) {
+  const { start, stop, intervals: iv } = s;
+  const dur = { Light: 0, Deep: 0, REM: 0, WAKE: 0 };
+  let onset = null;
+  for (const [t0, , st] of iv) if (onset === null && (st === "Light" || st === "Deep" || st === "REM")) onset = t0;
+  if (onset === null) onset = start;
+  for (const [t0, t1, st] of iv) {
+    if (st === "WAKE") dur.WAKE += Math.max(0, t1 - Math.max(t0, onset));
+    else if (st in dur) dur[st] += t1 - t0;
+  }
+  const asleep = dur.Light + dur.Deep + dur.REM;
+  let awakenings = s.awakenings;
+  if (awakenings === null || awakenings === undefined) awakenings = iv.filter(([t0, , st]) => st === "WAKE" && t0 >= onset).length;
+  const efficiency = stop > start ? Math.round(100 * asleep / (stop - start)) : 0;
+  const samples = [stageAt(iv, start)];
+  let t = Math.ceil(start / 30) * 30;
+  if (t === start) t += 30;
+  for (; t < stop; t += 30) samples.push(stageAt(iv, t));
+  return ["night", isoOffset(start), isoOffset(stop), hms(onset - start), hms(asleep), hms(dur.Light),
+    hms(dur.Deep), hms(dur.REM), hms(dur.WAKE), String(Math.trunc(awakenings)), String(efficiency),
+    "[" + samples.join(",") + "]"].join(";");
+}
+function writeDreem(stages) {
+  const lines = ["Type;Start Time;Stop Time;Sleep Onset Duration;Sleep Duration;Light Sleep Duration;Deep Sleep Duration;REM Duration;Wake After Sleep Onset Duration;Number of awakenings;Sleep efficiency;Hypnogram"];
+  for (const s of stages) lines.push(dreemRow(s));
+  return { name: "oscar_dreem/garmin_sleep_stages.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") };
+}
+
 /* ---------- nights ---------- */
 function dayLengthHours(y, m, d) {
   return (new Date(y, m, d + 1) - new Date(y, m, d)) / 3600000;
@@ -775,8 +893,9 @@ function renderNights() {
     when.textContent = `${hhmm(n.start)} to ${hhmm(n.end)}`;
     const stats = document.createElement("div");
     stats.className = "stats";
+    const extras = [n.hasMovement ? "movement" : "", stageKeys().has(n.key) ? "sleep stages" : ""].filter(Boolean);
     stats.innerHTML = `avg <b>${n.avg.toFixed(1)}%</b>, min <b>${n.min}%</b>, <b>${n.below90}</b> min under 90%`
-      + (n.hasMovement ? ", with movement" : "");
+      + (extras.length ? `, with ${extras.join(" and ")}` : "");
     left.append(h3, when, stats);
     const right = document.createElement("div");
     right.appendChild(sparkline(n));
@@ -797,17 +916,28 @@ function renderNights() {
     more.classList.add("hidden");
   }
   const fmt = formatChoice();
-  $("downloadInfo").textContent = sel.length
-    ? `${sel.length} night${sel.length > 1 ? "s" : ""} selected`
-    : "No nights in this range";
-  $("downloadBtn").disabled = !sel.length;
+  const st = selectedStages();
+  const parts = [];
+  if (sel.length) parts.push(`${sel.length} night${sel.length > 1 ? "s" : ""} of SpO2`);
+  if (st.length) parts.push(`${st.length} night${st.length > 1 ? "s" : ""} of sleep stages`);
+  $("downloadInfo").textContent = parts.length ? parts.join(", ") + " selected" : "No nights in this range";
+  $("downloadBtn").disabled = !sel.length && !st.length;
+  $("stagesOption").classList.toggle("hidden", !state.stages.length);
+  $("stagesStep").classList.toggle("hidden", !st.length);
   $("stepsViatom").classList.toggle("hidden", fmt !== "viatom");
   $("stepsMd300").classList.toggle("hidden", fmt !== "md300");
 }
 
+function stageKeys() { return new Set(state.stages.map((s) => s.key)); }
+function selectedStages() {
+  const from = $("fromDate").value;
+  return $("withStages").checked ? state.stages.filter((s) => !from || s.key >= from) : [];
+}
+
 function renderSummary(fileCount) {
   const n = state.nights;
-  const first = n[n.length - 1], last = n[0];
+  const all = n.length ? n : state.stages.map((s) => ({ ev: eveningOfKey(s.key) })).reverse();
+  const first = all[all.length - 1], last = all[0];
   const s = $("summary");
   s.textContent = "";
   const add = (big, small) => {
@@ -817,7 +947,8 @@ function renderSummary(fileCount) {
     d.append(b, small);
     s.appendChild(d);
   };
-  add(String(n.length), n.length > 1 ? "nights with SpO2" : "night with SpO2");
+  add(String(n.length), n.length === 1 ? "night with SpO2" : "nights with SpO2");
+  if (state.stages.length) add(String(state.stages.length), state.stages.length === 1 ? "night with sleep stages" : "nights with sleep stages");
   add(`${dayFmt.format(new Date(...first.ev))}`, "first night");
   add(`${dayFmt.format(new Date(...last.ev))}`, "latest night");
   add(String(fileCount), "files read");
@@ -830,7 +961,7 @@ async function handleFiles(fileList) {
   if (!files.length) return;
   $("results").classList.add("hidden");
   $("downloadStatus").textContent = "";
-  state.nights = []; state.showAll = false;
+  state.nights = []; state.stages = []; state.showAll = false;
   try {
     const fits = [];
     for (const f of files) {
@@ -840,8 +971,13 @@ async function handleFiles(fileList) {
       else if (lower.endsWith(".zip")) await collectFitFiles(f, f.name, fits, 0);
     }
     state.movement = new Map();
+    const sleepSessions = [];
     for (const j of fits.filter((x) => x.json)) {
-      try { extractMovement(JSON.parse(new TextDecoder().decode(await j.read())), state.movement); } catch (err) { /* not JSON */ }
+      try {
+        const obj = JSON.parse(new TextDecoder().decode(await j.read()));
+        extractMovement(obj, state.movement);
+        extractSleepJson(obj, sleepSessions);
+      } catch (err) { /* not JSON */ }
     }
     fits.splice(0, fits.length, ...fits.filter((x) => !x.json));
     if (!fits.length) {
@@ -849,11 +985,16 @@ async function handleFiles(fileList) {
       return;
     }
     const wellness = fits.filter((f) => /wellness/i.test(f.name));
-    const todo = wellness.length ? wellness : fits;
+    const sleepFits = fits.filter((f) => /sleep_data/i.test(f.name));
+    const todo = wellness.length ? [...wellness, ...sleepFits] : fits;
     const spo2 = new Map(), hr = new Map();
     let read = 0;
     for (const f of todo) {
-      try { extractFit(await f.read(), spo2, hr); } catch (err) { /* skip unreadable file */ }
+      try {
+        const buf = await f.read();
+        if (!wellness.length || /wellness/i.test(f.name)) extractFit(buf, spo2, hr);
+        if (!wellness.length || /sleep_data/i.test(f.name)) sleepSessions.push(...extractSleepFit(buf));
+      } catch (err) { /* skip unreadable file */ }
       read++;
       if (read % 5 === 0 || read === todo.length) {
         setStatus(`Reading ${read} of ${todo.length} files…`);
@@ -864,7 +1005,8 @@ async function handleFiles(fileList) {
     setProgress();
     const built = buildNights(spo2, hr);
     state.nights = built.nights; state.hr = hr; state.hrTimes = built.hrTimes;
-    if (!state.nights.length) {
+    state.stages = buildStages(sleepSessions);
+    if (!state.nights.length && !state.stages.length) {
       setStatus(spo2.size
         ? "SpO2 readings were found, but no recording lasts 30 minutes or more."
         : "No SpO2 readings found. Check that Pulse Ox is set to “During sleep” on the watch, and that the export contains WELLNESS .fit files.", true);
@@ -888,13 +1030,15 @@ const downloadsReady = (window.claude && typeof window.claude.use === "function"
 
 async function download() {
   const sel = selectedNights();
-  if (!sel.length) return;
   const fmt = formatChoice();
   const files = [];
   for (const n of sel) {
     files.push(fmt === "md300" ? writeMd300(n, state.hrTimes, state.hr) : writeViatom(n, state.hrTimes, state.hr));
     if ($("withCsv").checked) files.push(writeCsv(n, state.hrTimes, state.hr));
   }
+  const st = selectedStages();
+  if (st.length) files.push(writeDreem(st));
+  if (!files.length) return;
   const blob = makeZip(files);
   const filename = "garmin-spo2-for-oscar.zip";
   const msg = $("downloadStatus");
@@ -931,6 +1075,7 @@ $("fileInput").addEventListener("change", (e) => { handleFiles(e.target.files); 
 drop.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
 document.querySelectorAll('input[name="format"]').forEach((r) => r.addEventListener("change", renderNights));
 $("fromDate").addEventListener("change", renderNights);
+$("withStages").addEventListener("change", renderNights);
 $("clearDate").addEventListener("click", () => { $("fromDate").value = ""; renderNights(); });
 $("showAll").addEventListener("click", () => { state.showAll = !state.showAll; renderNights(); });
 $("downloadBtn").addEventListener("click", download);

@@ -9,6 +9,10 @@ In OSCAR: Tools > Import Viatom/Wellue data, select every file in that folder
 With --format md300: one ChoiceMMed MD300 .dat per night, to import one at a
 time via Oximetry Wizard > Import from a data file.
 
+Sleep stages (SLEEP_DATA .fit files) are written to
+./oscar_dreem/garmin_sleep_stages.csv, one row per night, to import with
+"Import Dreem data". OSCAR then shows a sleep-stage graph.
+
 No external dependencies: Python 3.9+ is enough.
 
 Usage:
@@ -24,6 +28,7 @@ Options:
     --tz-offset H        fixed offset in hours, no DST (rarely useful)
     --no-csv             do not write the human-readable .csv
     --format FMT         viatom (default) or md300
+    --no-stages          do not write the sleep-stage file
 
 md300 .dat format (read by MD300W1Loader::readDATFile in OSCAR):
     byte 0: id, bytes 1-2: number of records (little-endian)
@@ -343,6 +348,160 @@ def extract_many(paths, log=print):
     return list(spo2.values()), hr, tz
 
 
+# ---------------------------------------------------------------------------
+# Sleep stages -> Dreem CSV (OSCAR: "Import Dreem data")
+# ---------------------------------------------------------------------------
+MSG_EVENT = 21              # event 74 = sleep window start (type 0) / stop (type 1)
+MSG_SLEEP_LEVEL = 275       # 253 timestamp = END of the interval, 0 sleep_level
+MSG_SLEEP_ASSESSMENT = 346  # 11 awakenings_count
+FIT_STAGES = {0: "NA", 1: "WAKE", 2: "Light", 3: "Deep", 4: "REM"}
+JSON_STAGES = {0: "Deep", 1: "Light", 2: "REM", 3: "WAKE"}   # Garmin Connect sleepLevels
+
+
+def extract_sleep(path):
+    """Sleep-stage sessions from a SLEEP_DATA .fit file.
+
+    Returns a list of {"start", "stop", "intervals": [(t0, t1, stage)],
+    "awakenings"} with FIT UTC timestamps. Each sleep_level message closes
+    the interval that started at the previous one (the first one starts at
+    the sleep window start, the last one is stamped at the window end).
+    """
+    starts, stops, levels, awakenings = [], [], [], None
+    for gnum, v in parse_fit(path):
+        if gnum == MSG_EVENT and v.get(0) == 74 and 253 in v:
+            (starts if v.get(1, 0) == 0 else stops).append(v[253])
+        elif gnum == MSG_SLEEP_LEVEL and 253 in v and 0 in v:
+            levels.append((v[253], v[0]))
+        elif gnum == MSG_SLEEP_ASSESSMENT and 11 in v:
+            awakenings = v[11]
+    if not levels:
+        return []
+    levels.sort()
+    start = starts[0] if starts else levels[0][0]
+    stop = stops[-1] if stops else levels[-1][0]
+    intervals, prev = [], start
+    for t, lvl in levels:
+        if t > prev:
+            intervals.append((prev, min(t, stop), FIT_STAGES.get(lvl, "NA")))
+        prev = max(prev, t)
+    if not intervals:
+        return []
+    return [{"start": start, "stop": stop, "intervals": intervals, "awakenings": awakenings}]
+
+
+def sleep_from_json(data, to_fit_ts):
+    """Sleep-stage session from Garmin Connect sleep JSON (sleepLevels)."""
+    items = (data or {}).get("sleepLevels") or []
+    intervals = []
+    for it in items:
+        t0, t1 = to_fit_ts(it.get("startGMT")), to_fit_ts(it.get("endGMT"))
+        stage = JSON_STAGES.get(int(it.get("activityLevel", -1)) if isinstance(it.get("activityLevel"), (int, float)) else -1)
+        if t0 is not None and t1 is not None and t1 > t0 and stage:
+            intervals.append((t0, t1, stage))
+    if not intervals:
+        return []
+    intervals.sort()
+    dto = (data or {}).get("dailySleepDTO") or {}
+    return [{"start": intervals[0][0], "stop": intervals[-1][1], "intervals": intervals,
+             "awakenings": dto.get("awakeCount")}]
+
+
+def clip_session(sess, t_from):
+    """Drops the part of a sleep-stage session before t_from (None if empty)."""
+    iv = [(max(t0, t_from), t1, st) for t0, t1, st in sess["intervals"] if t1 > t_from]
+    if not iv:
+        return None
+    return dict(sess, start=max(sess["start"], t_from), intervals=iv)
+
+def _hms(sec):
+    sec = int(round(sec))
+    return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
+def _iso(t, tz):
+    utc = FIT_EPOCH + dt.timedelta(seconds=t)
+    if isinstance(tz, int):
+        local = utc.astimezone(dt.timezone(dt.timedelta(seconds=tz)))
+    else:
+        local = utc.astimezone(tz)
+    return local.replace(microsecond=0).isoformat()
+
+
+def stage_at(intervals, t):
+    for t0, t1, st in intervals:
+        if t0 <= t < t1:
+            return st
+    return "NA"
+
+
+def dreem_row(sess, tz):
+    """One Dreem CSV row (semicolon-separated) for a sleep-stage session."""
+    start, stop, iv = sess["start"], sess["stop"], sess["intervals"]
+    dur = {"Light": 0, "Deep": 0, "REM": 0, "WAKE": 0}
+    onset_t = None
+    for t0, t1, st in iv:
+        if st in ("Light", "Deep", "REM") and onset_t is None:
+            onset_t = t0
+    onset_t = onset_t if onset_t is not None else start
+    for t0, t1, st in iv:
+        if st == "WAKE":
+            dur["WAKE"] += max(0, t1 - max(t0, onset_t))
+        elif st in dur:
+            dur[st] += t1 - t0
+    asleep = dur["Light"] + dur["Deep"] + dur["REM"]
+    awakenings = sess.get("awakenings")
+    if awakenings is None:
+        awakenings = sum(1 for (t0, _, st) in iv if st == "WAKE" and t0 >= onset_t)
+    efficiency = round(100 * asleep / (stop - start)) if stop > start else 0
+    # OSCAR reads one stage per 30 s: first at the start time, then on every
+    # 30-second boundary up to the stop time.
+    samples, t = [stage_at(iv, start)], -(-start // 30) * 30
+    if t == start:
+        t += 30
+    while t < stop:
+        samples.append(stage_at(iv, t))
+        t += 30
+    return ";".join([
+        "night", _iso(start, tz), _iso(stop, tz), _hms(onset_t - start), _hms(asleep),
+        _hms(dur["Light"]), _hms(dur["Deep"]), _hms(dur["REM"]), _hms(dur["WAKE"]),
+        str(int(awakenings)), str(efficiency), "[" + ",".join(samples) + "]",
+    ])
+
+
+DREEM_HEADER = ("Type;Start Time;Stop Time;Sleep Onset Duration;Sleep Duration;"
+                "Light Sleep Duration;Deep Sleep Duration;REM Duration;"
+                "Wake After Sleep Onset Duration;Number of awakenings;Sleep efficiency;Hypnogram")
+
+
+def write_dreem_csv(path, sessions, tz, log=print):
+    """Writes every sleep-stage session (deduplicated) into one Dreem CSV."""
+    uniq = []
+    for sess in sorted(sessions, key=lambda x: x["start"]):
+        if uniq and abs(sess["start"] - uniq[-1]["start"]) < 1800:
+            continue                      # same night from two sources
+        uniq.append(sess)
+    if not uniq:
+        return None
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(DREEM_HEADER + "\n")
+        for sess in uniq:
+            f.write(dreem_row(sess, tz) + "\n")
+    first, last = to_local(uniq[0]["start"], tz), to_local(uniq[-1]["start"], tz)
+    log(f"-> {path}: sleep stages for {len(uniq)} night(s), {first:%Y-%m-%d} to {last:%Y-%m-%d}")
+    return path
+
+
+def fit_to_ts_from_string(value):
+    """Garmin JSON timestamp (Unix ms or GMT ISO string) -> FIT UTC seconds."""
+    if isinstance(value, (int, float)):
+        return int(value / 1000) - 631065600
+    if isinstance(value, str):
+        t = dt.datetime.fromisoformat(value.replace("Z", "")).replace(tzinfo=dt.timezone.utc)
+        return int(t.timestamp()) - 631065600
+    return None
+
+
 def make_tz(name=None, offset_hours=None):
     if offset_hours is not None:
         return int(offset_hours * 3600)
@@ -366,16 +525,28 @@ def main():
     ap.add_argument("--format", choices=["viatom", "md300"], default="viatom",
                     help="viatom (default): import all nights at once via "
                          "'Import Viatom/Wellue data'; md300: .dat for the Oximetry Wizard")
+    ap.add_argument("--no-stages", action="store_true",
+                    help="don't write the sleep-stage file (Dreem format)")
     a = ap.parse_args()
 
     readings, hr, _ = extract_many(a.fit)
     tz = make_tz(a.timezone, a.tz_offset)
-    if not readings:
-        sys.exit("No SpO2 readings found (is SpO2 tracking enabled on the watch?)")
-    created = convert(readings, hr, tz, a.outdir, a.min_confidence, a.min_minutes,
-                      a.max_hold, a.split_gap, not a.no_csv, fmt=a.format)
-    if not created:
-        print("No segment long enough (see --min-minutes).")
+    sessions = []
+    for p in a.fit:
+        try:
+            sessions += extract_sleep(p)
+        except Exception:
+            pass
+    if not readings and not sessions:
+        sys.exit("No SpO2 readings or sleep stages found (is SpO2 tracking enabled on the watch?)")
+    if readings:
+        created = convert(readings, hr, tz, a.outdir, a.min_confidence, a.min_minutes,
+                          a.max_hold, a.split_gap, not a.no_csv, fmt=a.format)
+        if not created:
+            print("No SpO2 segment long enough (see --min-minutes).")
+    if sessions and not a.no_stages:
+        write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"), sessions, tz)
+        print("Sleep stages: in OSCAR, Import Dreem data and pick oscar_dreem/garmin_sleep_stages.csv")
 
 
 if __name__ == "__main__":

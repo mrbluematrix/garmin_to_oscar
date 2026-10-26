@@ -25,6 +25,8 @@ How it works:
   3. Downloads Garmin's per-minute sleep movement (not in the .fit files);
      with the default Viatom format it appears as OSCAR's Movement graph.
   4. Converts them for OSCAR (1 reading per minute, same as the manual export).
+  5. Writes the sleep stages (deep, light, REM, awake) of every night into
+     ./oscar_dreem/garmin_sleep_stages.csv, imported with "Import Dreem data".
   If the .fit download fails, the script falls back to the Garmin Connect
   SpO2 JSON API (sometimes at a lower resolution).
 
@@ -150,26 +152,31 @@ def fetch_json_day(api, day, log=print):
     return readings, hr
 
 
-def fetch_movement(api, wake_day, fit_dir, offline=False, log=print):
-    """Garmin's per-minute sleep movement for the night ending on wake_day.
+def fetch_sleep_json(api, wake_day, fit_dir, offline=False, log=print):
+    """Garmin Connect sleep data for the night ending on wake_day (or None).
 
-    Returns {fit_minute_start_utc: activity level}. The JSON is cached as
-    <fit_dir>/<wake_day>/sleep.json, so it is downloaded only once.
+    Cached as <fit_dir>/<wake_day>/sleep.json, so it is downloaded only once.
     """
     path = os.path.join(fit_dir, wake_day.isoformat(), "sleep.json")
-    data = None
     recent = wake_day >= dt.date.today() - dt.timedelta(days=1)
-    if os.path.exists(path) and (offline or not recent):
+    if os.path.exists(path) and (offline or not recent or api is None):
         with open(path) as f:
-            data = json.load(f)
-    elif api is not None and not offline:
-        try:
-            data = api.get_sleep_data(wake_day.isoformat()) or {}
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                json.dump(data, f)
-        except Exception as e:
-            log(f"Sleep movement unavailable for {wake_day:%Y-%m-%d} ({e}).")
+            return json.load(f)
+    if api is None or offline:
+        return None
+    try:
+        data = api.get_sleep_data(wake_day.isoformat()) or {}
+    except Exception as e:
+        log(f"Sleep data unavailable for {wake_day:%Y-%m-%d} ({e}).")
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f)
+    return data
+
+
+def movement_from_json(data):
+    """Per-minute sleep movement: {fit_minute_start_utc: activity level}."""
     movement = {}
     for item in (data or {}).get("sleepMovement") or []:
         ts = to_fit_ts(item.get("startGMT"))
@@ -211,6 +218,33 @@ def process_night(api, night, a):
 
     readings, hr, _ = f2o.extract_many(paths) if paths else ([], {}, None)
 
+    tz = f2o.make_tz(a.timezone, a.tz_offset)
+    window = (local_to_fit(night, 12, 0, tz), local_to_fit(days[1], 12, 0, tz))
+
+    # Sleep data (movement and stages) from Garmin Connect, cached as sleep.json
+    sleep_json = None
+    if not (a.no_movement and a.no_stages):
+        sleep_json = fetch_sleep_json(api, days[1], a.fit_dir, a.offline)
+
+    stages = []
+    if not a.no_stages:
+        stages = f2o.sleep_from_json(sleep_json, to_fit_ts)
+        if not stages:                       # otherwise SLEEP_DATA .fit files
+            for p in paths:
+                try:
+                    stages += f2o.extract_sleep(p)
+                except Exception:
+                    pass
+        stages = [x for x in stages if window[0] <= x["start"] < window[1]]
+        midnight = local_to_fit(days[1], 0, 0, tz)
+        if (day_length_hours(night, tz) != 24 and not a.keep_dst_evening
+                and any(x["start"] < midnight for x in stages)):
+            # same OSCAR time-axis issue as for the oximetry (see below)
+            stages = [c for c in (f2o.clip_session(x, midnight) for x in stages) if c]
+            print("Daylight saving time changed that day: sleep stages start at midnight.")
+        if stages:
+            print("Sleep stages found.")
+
     if (use_json or not readings) and api is not None and not a.offline:
         print("Falling back to the Garmin Connect SpO2 JSON API...")
         for d in days:
@@ -224,12 +258,9 @@ def process_night(api, night, a):
 
     if not readings:
         print("No SpO2 readings for this night.")
-        return []
-
-    tz = f2o.make_tz(a.timezone, a.tz_offset)
+        return [], stages
 
     # Same window as OSCAR's day split: noon to noon (local time)
-    window = (local_to_fit(night, 12, 0, tz), local_to_fit(days[1], 12, 0, tz))
     midnight = local_to_fit(days[1], 0, 0, tz)
 
     if a.from_time:
@@ -249,7 +280,7 @@ def process_night(api, night, a):
               "readings taken before midnight were dropped, otherwise OSCAR "
               "would show this night's time axis 1 hour off.")
 
-    movement = {} if a.no_movement else fetch_movement(api, days[1], a.fit_dir, a.offline)
+    movement = {} if a.no_movement else movement_from_json(sleep_json)
     if movement:
         print(f"Sleep movement: {len(movement)} minutes.")
 
@@ -258,7 +289,7 @@ def process_night(api, night, a):
                           fmt=a.format, movement=movement)
     if not created:
         print("No overnight recording long enough (see --min-minutes).")
-    return created
+    return created, stages
 
 
 def main():
@@ -287,14 +318,18 @@ def main():
                     help="viatom (default): all nights in one import; md300: Oximetry Wizard .dat")
     ap.add_argument("--no-movement", action="store_true",
                     help="don't download Garmin's sleep movement")
+    ap.add_argument("--no-stages", action="store_true",
+                    help="don't write the sleep-stage file (Dreem format)")
     ap.add_argument("--keep-dst-evening", action="store_true",
                     help="keep readings before midnight on DST-change nights")
     a = ap.parse_args()
 
     api = None if a.offline else login(a.tokenstore)
-    created = []
+    created, stages = [], []
     for i in range(a.nights - 1, -1, -1):
-        created += process_night(api, a.night - dt.timedelta(days=i), a)
+        c, st = process_night(api, a.night - dt.timedelta(days=i), a)
+        created += c
+        stages += st
 
     if a.format == "md300":
         print(f"\n{len(created)} .dat file(s) ready for OSCAR"
@@ -304,7 +339,13 @@ def main():
               "In OSCAR: Import Viatom/Wellue data, open that folder, select all files "
               "(Cmd+A) and confirm. Nights already imported are skipped.")
     else:
-        print("\nNo file created.")
+        print("\nNo oximetry file created.")
+    if stages:
+        tz = f2o.make_tz(a.timezone, a.tz_offset)
+        path = f2o.write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"),
+                                   stages, tz, log=lambda m: None)
+        print(f"Sleep stages for {len(stages)} night(s) in {path}\n"
+              "In OSCAR: Import Dreem data and pick that file. Nights already imported are skipped.")
 
 
 if __name__ == "__main__":
