@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Garmin SpO2 for OSCAR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #EEF2F6;
+  --surface: #FFFFFF;
+  --ink: #18212F;
+  --muted: #5E6A7B;
+  --line: #D3DAE3;
+  --spo2: #2449C9;
+  --spo2-soft: #DCE4FA;
+  --pulse: #C53340;
+  --warn: #8A5D00;
+  --warn-soft: #FBF0D6;
+  --focus: #2449C9;
+  color-scheme: light;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1520;
+    --surface: #161E2C;
+    --ink: #E4E9F1;
+    --muted: #95A1B3;
+    --line: #2A3549;
+    --spo2: #8AA5FF;
+    --spo2-soft: #1E2A47;
+    --pulse: #FF7480;
+    --warn: #E9BE58;
+    --warn-soft: #2B2412;
+    --focus: #8AA5FF;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1520;
+  --surface: #161E2C;
+  --ink: #E4E9F1;
+  --muted: #95A1B3;
+  --line: #2A3549;
+  --spo2: #8AA5FF;
+  --spo2-soft: #1E2A47;
+  --pulse: #FF7480;
+  --warn: #E9BE58;
+  --warn-soft: #2B2412;
+  --focus: #8AA5FF;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 1rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+h1 {
+  font-size: clamp(1.9rem, 5vw, 2.6rem);
+  line-height: 1.1;
+  margin: 0 0 0.75rem;
+  letter-spacing: -0.01em;
+}
+h2 { font-size: 1.25rem; margin: 2.5rem 0 0.75rem; }
+p { margin: 0 0 1rem; max-width: 38rem; }
+.lede { color: var(--muted); font-size: 1.1rem; }
+a { color: var(--spo2); }
+
+/* Drop zone: the trace motif lives here */
+.drop {
+  position: relative;
+  display: block;
+  margin-top: 2rem;
+  background: var(--surface);
+  border: 2px dashed var(--line);
+  border-radius: 14px;
+  padding: 2.25rem 1.5rem 6.5rem;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color .15s, background-color .15s;
+}
+.drop:hover, .drop.over { border-color: var(--spo2); }
+.drop.over { background: var(--spo2-soft); }
+.drop:focus-within { outline: 3px solid var(--focus); outline-offset: 3px; }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.drop strong { display: block; font-size: 1.3rem; margin-bottom: .35rem; }
+.drop span { color: var(--muted); }
+.drop .button { margin-top: 1.1rem; }
+.drop svg.trace {
+  position: absolute; left: 0; right: 0; bottom: 1rem;
+  width: 100%; height: 4.5rem;
+  pointer-events: none;
+}
+.drop svg.trace path { fill: none; stroke: var(--spo2); stroke-width: 2; opacity: .55; }
+.drop svg.trace line { stroke: var(--line); stroke-dasharray: 4 5; }
+
+.button {
+  display: inline-block;
+  font: inherit;
+  font-weight: 700;
+  background: var(--spo2);
+  color: var(--surface);
+  border: 0;
+  border-radius: 8px;
+  padding: .7rem 1.2rem;
+  cursor: pointer;
+}
+.button:hover { filter: brightness(1.08); }
+.button:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 3px solid var(--focus); outline-offset: 2px;
+}
+.button[disabled] { opacity: .5; cursor: not-allowed; }
+.link-button {
+  font: inherit; background: none; border: 0; padding: 0;
+  color: var(--spo2); text-decoration: underline; cursor: pointer;
+}
+
+.status { margin-top: 1.25rem; color: var(--muted); min-height: 1.6em; }
+.status.error { color: var(--pulse); font-weight: 700; }
+progress { width: 100%; height: .5rem; accent-color: var(--spo2); }
+
+.hidden { display: none !important; }
+
+/* Results */
+.summary {
+  display: flex; flex-wrap: wrap; gap: .5rem 2rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 1.25rem;
+}
+.summary div b { font-size: 1.6rem; display: block; line-height: 1.2; }
+.summary div { color: var(--muted); }
+.summary div b { color: var(--ink); }
+
+.options {
+  display: grid; gap: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.options fieldset { border: 0; padding: 0; margin: 0; }
+.options legend { font-weight: 700; padding: 0; margin-bottom: .35rem; }
+.options label { display: flex; gap: .55rem; align-items: baseline; margin: .2rem 0; }
+.options small { color: var(--muted); display: block; }
+.options input[type="date"] {
+  font: inherit; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: .3rem .5rem;
+}
+.inline { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+
+.nights { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+.night {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, 12rem) 1fr;
+  gap: .25rem 1.25rem;
+  padding: .9rem 0;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.night h3 { font-size: 1rem; margin: 0; }
+.night .when { color: var(--muted); font-size: .92rem; }
+.night .stats { font-size: .92rem; color: var(--muted); }
+.night .stats b { color: var(--ink); }
+.night svg { width: 100%; height: 3.25rem; display: block; }
+.night svg path { fill: none; stroke: var(--spo2); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.night svg line { stroke: var(--pulse); stroke-dasharray: 3 4; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .7; }
+.night .note {
+  grid-column: 1 / -1;
+  font-size: .88rem;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 6px;
+  padding: .35rem .6rem;
+  margin-top: .3rem;
+}
+@media (max-width: 34rem) {
+  .night { grid-template-columns: 1fr; }
+}
+
+.download-row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1.5rem 0 .5rem; }
+.download-row .muted { color: var(--muted); }
+
+ol.steps { padding-left: 1.4rem; margin: 0; max-width: 38rem; }
+ol.steps li { margin-bottom: .6rem; }
+.fine { color: var(--muted); font-size: .92rem; }
+footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>Garmin SpO2 for OSCAR</h1>
+  <p class="lede">Turn the overnight SpO2 and pulse recorded by your Garmin watch into files OSCAR can import, so you can see them next to your CPAP data.</p>
+
+  <label class="drop" id="drop">
+    <input type="file" id="fileInput" multiple accept=".zip,.fit,.FIT,application/zip">
+    <strong>Drop your Garmin export here</strong>
+    <span>The .zip from Garmin Connect’s “Export your data”, a daily .zip, or individual .fit files.</span>
+    <div><span class="button" aria-hidden="true">Choose files</span></div>
+    <svg class="trace" viewBox="0 0 600 72" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" y1="44" x2="600" y2="44"></line>
+      <path d="M0 18H34V22H52V16H80V30H96V40H110V24H150V20H172V26H190V14H226V12H250V28H262V52H274V34H300V22H332V18H356V24H372V38H384V60H398V30H430V20H462V16H488V26H508V22H540V18H568V24H600"></path>
+    </svg>
+  </label>
+
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+  <progress id="progress" class="hidden" max="1" value="0"></progress>
+
+  <section id="results" class="hidden" aria-labelledby="resultsTitle">
+    <h2 id="resultsTitle">Your nights</h2>
+    <div class="summary" id="summary"></div>
+
+    <div class="options">
+      <fieldset>
+        <legend>Format</legend>
+        <label><input type="radio" name="format" value="viatom" checked>
+          <span>Wellue/Viatom files <small>Import every night at once with “Import Viatom/Wellue data”. Nights already in OSCAR are skipped.</small></span></label>
+        <label><input type="radio" name="format" value="md300">
+          <span>ChoiceMMed .dat files <small>Import one night at a time with the Oximetry Wizard.</small></span></label>
+      </fieldset>
+      <div class="inline">
+        <label><input type="checkbox" id="withCsv" checked> <span>Include a readable .csv for each night</span></label>
+      </div>
+      <div class="inline">
+        <label for="fromDate">Only nights from</label>
+        <input type="date" id="fromDate">
+        <button type="button" class="link-button" id="clearDate">All nights</button>
+      </div>
+    </div>
+
+    <div class="download-row">
+      <button type="button" class="button" id="downloadBtn">Download files for OSCAR</button>
+      <span class="muted" id="downloadInfo"></span>
+    </div>
+    <div class="status" id="downloadStatus" role="status" aria-live="polite"></div>
+
+    <ul class="nights" id="nights"></ul>
+    <p><button type="button" class="link-button hidden" id="showAll"></button></p>
+
+    <h2>Import into OSCAR</h2>
+    <ol class="steps" id="stepsViatom">
+      <li>Unzip the downloaded file.</li>
+      <li>In OSCAR, choose <b>Import Viatom/Wellue data</b>.</li>
+      <li>Open the <b>oscar_viatom</b> folder, select every file (Cmd+A or Ctrl+A) and confirm.</li>
+    </ol>
+    <ol class="steps hidden" id="stepsMd300">
+      <li>Unzip the downloaded file.</li>
+      <li>In OSCAR, open the <b>Oximetry Wizard</b> and choose to import from a data file.</li>
+      <li>Pick one .dat file from the <b>md300</b> folder and choose “use the oximeter’s internal clock”. Repeat for each night.</li>
+      <li>If you abandon an import halfway, restart OSCAR before the next one.</li>
+    </ol>
+  </section>
+
+  <footer>
+    <p class="fine">Everything runs in your browser: your files are never uploaded anywhere. Times use this computer’s time zone (<span id="tzName"></span>).</p>
+    <p class="fine">On a night that starts on a daylight-saving-change day, readings before midnight are left out, otherwise OSCAR labels that night’s time axis one hour off.</p>
+    <p class="fine">A wrist sensor is not a medical oximeter: one reading per minute, and flat plateaus often mean poor contact. Talk to your doctor about your results.</p>
+  </footer>
+</main>
+
+<script>
+"use strict";
+
+/* ---------- constants ---------- */
+const FIT_TO_UNIX = 631065600;         // seconds between 1970-01-01 and 1989-12-31
+const SPLIT_GAP = 600;                 // s: a longer gap starts a new recording
+const MIN_SPAN = 1800;                 // s: shorter recordings are ignored
+const MAX_HOLD = 120;                  // s: a reading is repeated at most this long
+const VIATOM_STEP = 4;                 // s per record in Viatom files
+const LIST_LIMIT = 60;
+
+const $ = (id) => document.getElementById(id);
+const state = { nights: [], showAll: false };
+
+/* ---------- small helpers ---------- */
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+const fitToDate = (t) => new Date((t + FIT_TO_UNIX) * 1000);
+const stamp14 = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+const isoLocal = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const dateKey = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+function setStatus(text, isError = false) {
+  const el = $("status");
+  el.textContent = text;
+  el.classList.toggle("error", isError);
+}
+function setProgress(done, total) {
+  const p = $("progress");
+  if (total == null) { p.classList.add("hidden"); return; }
+  p.classList.remove("hidden");
+  p.max = total || 1;
+  p.value = done;
+}
+
+/* ---------- ZIP reading (no library, works on multi-GB archives) ---------- */
+function u64(dv, off) { return dv.getUint32(off, true) + dv.getUint32(off + 4, true) * 4294967296; }
+
+async function listZip(blob) {
+  const tailLen = Math.min(blob.size, 66000);
+  const tailStart = blob.size - tailLen;
+  const tail = new DataView(await blob.slice(tailStart).arrayBuffer());
+  let eocd = -1;
+  for (let i = tailLen - 22; i >= 0; i--) {
+    if (tail.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a valid .zip file");
+  let count = tail.getUint16(eocd + 10, true);
+  let cdSize = tail.getUint32(eocd + 12, true);
+  let cdOff = tail.getUint32(eocd + 16, true);
+  if (count === 0xFFFF || cdSize === 0xFFFFFFFF || cdOff === 0xFFFFFFFF) {
+    const loc = eocd - 20;
+    if (loc >= 0 && tail.getUint32(loc, true) === 0x07064b50) {
+      const z64Off = u64(tail, loc + 8);
+      const z = new DataView(await blob.slice(z64Off, z64Off + 56).arrayBuffer());
+      if (z.getUint32(0, true) === 0x06064b50) {
+        count = u64(z, 32); cdSize = u64(z, 40); cdOff = u64(z, 48);
+      }
+    }
+  }
+  const cd = new DataView(await blob.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  const dec = new TextDecoder();
+  const entries = [];
+  let p = 0;
+  while (p + 46 <= cd.byteLength && cd.getUint32(p, true) === 0x02014b50) {
+    const flags = cd.getUint16(p + 8, true);
+    const method = cd.getUint16(p + 10, true);
+    let comp = cd.getUint32(p + 20, true);
+    let size = cd.getUint32(p + 24, true);
+    const nameLen = cd.getUint16(p + 28, true);
+    const extraLen = cd.getUint16(p + 30, true);
+    const commentLen = cd.getUint16(p + 32, true);
+    let local = cd.getUint32(p + 42, true);
+    const name = dec.decode(new Uint8Array(cd.buffer, cd.byteOffset + p + 46, nameLen));
+    let e = p + 46 + nameLen;
+    const eEnd = e + extraLen;
+    while (e + 4 <= eEnd) {                       // ZIP64 extended sizes/offset
+      const id = cd.getUint16(e, true), len = cd.getUint16(e + 2, true);
+      if (id === 0x0001) {
+        let q = e + 4;
+        if (size === 0xFFFFFFFF) { size = u64(cd, q); q += 8; }
+        if (comp === 0xFFFFFFFF) { comp = u64(cd, q); q += 8; }
+        if (local === 0xFFFFFFFF) { local = u64(cd, q); q += 8; }
+      }
+      e += 4 + len;
+    }
+    entries.push({ name, method, comp, size, local, encrypted: !!(flags & 1) });
+    p = eEnd + commentLen;
+  }
+  return entries;
+}
+
+async function entryStream(blob, e) {
+  const h = new DataView(await blob.slice(e.local, e.local + 30).arrayBuffer());
+  if (h.getUint32(0, true) !== 0x04034b50) throw new Error("damaged .zip entry " + e.name);
+  const start = e.local + 30 + h.getUint16(26, true) + h.getUint16(28, true);
+  const data = blob.slice(start, start + e.comp);
+  if (e.method === 0) return data.stream();
+  if (e.method === 8) return data.stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  throw new Error("unsupported compression in " + e.name);
+}
+async function entryBuffer(blob, e) { return new Response(await entryStream(blob, e)).arrayBuffer(); }
+async function entryBlob(blob, e) { return new Response(await entryStream(blob, e)).blob(); }
+
+async function collectFitFiles(blob, label, out, depth) {
+  setStatus(`Opening ${label}…`);
+  await tick();
+  const entries = await listZip(blob);
+  for (const e of entries) {
+    if (e.encrypted || e.name.endsWith("/")) continue;
+    const lower = e.name.toLowerCase();
+    const base = e.name.split("/").pop();
+    if (lower.endsWith(".fit")) {
+      out.push({ name: base, read: () => entryBuffer(blob, e) });
+    } else if (lower.endsWith(".zip") && depth < 3) {
+      const inner = await entryBlob(blob, e);
+      await collectFitFiles(inner, base, out, depth + 1);
+    }
+  }
+}
+
+/* ---------- FIT parsing ---------- */
+const BASE = {
+  0x00: [1, "u8", 0xFF], 0x01: [1, "s8", 0x7F], 0x02: [1, "u8", 0xFF],
+  0x83: [2, "s16", 0x7FFF], 0x84: [2, "u16", 0xFFFF], 0x85: [4, "s32", 0x7FFFFFFF],
+  0x86: [4, "u32", 0xFFFFFFFF], 0x0A: [1, "u8", 0x00], 0x8B: [2, "u16", 0x0000],
+  0x8C: [4, "u32", 0x00000000], 0x0D: [1, "u8", 0xFF],
+};
+function readValue(dv, pos, kind, little) {
+  switch (kind) {
+    case "u8": return dv.getUint8(pos);
+    case "s8": return dv.getInt8(pos);
+    case "u16": return dv.getUint16(pos, little);
+    case "s16": return dv.getInt16(pos, little);
+    case "u32": return dv.getUint32(pos, little);
+    case "s32": return dv.getInt32(pos, little);
+  }
+}
+
+/** Calls onMessage(globalNum, {fieldNum: value}) for every data message. */
+function parseFit(buf, onMessage) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  if (u8.length < 12 || String.fromCharCode(u8[8], u8[9], u8[10], u8[11]) !== ".FIT") {
+    throw new Error("not a FIT file");
+  }
+  const hsize = u8[0];
+  const end = Math.min(hsize + dv.getUint32(4, true), u8.length);
+  const defs = {};
+  let pos = hsize, lastTs = null;
+
+  const readFields = (d) => {
+    const vals = {};
+    for (const [num, size, type] of d.fields) {
+      const b = BASE[type];
+      if (b && b[0] === size && pos + size <= u8.length) {
+        const v = readValue(dv, pos, b[1], d.little);
+        if (v !== b[2]) vals[num] = v;
+      }
+      pos += size;
+    }
+    pos += d.devSize;
+    return vals;
+  };
+
+  while (pos < end) {
+    const rh = u8[pos++];
+    if (rh & 0x80) {                                  // compressed timestamp header
+      const d = defs[(rh >> 5) & 0x03];
+      if (!d) throw new Error("bad FIT record");
+      const off = rh & 0x1F;
+      if (lastTs !== null) lastTs = lastTs + ((off - (lastTs & 0x1F)) & 0x1F);
+      const vals = readFields(d);
+      if (lastTs !== null && !(253 in vals)) vals[253] = lastTs;
+      onMessage(d.gnum, vals);
+      continue;
+    }
+    const local = rh & 0x0F;
+    if (rh & 0x40) {                                  // definition message
+      const little = u8[pos + 1] === 0;
+      const gnum = dv.getUint16(pos + 2, little);
+      const nf = u8[pos + 4];
+      pos += 5;
+      const fields = [];
+      for (let i = 0; i < nf; i++) { fields.push([u8[pos], u8[pos + 1], u8[pos + 2]]); pos += 3; }
+      let devSize = 0;
+      if (rh & 0x20) {
+        const nd = u8[pos++];
+        for (let i = 0; i < nd; i++) { devSize += u8[pos + 1]; pos += 3; }
+      }
+      defs[local] = { gnum, little, fields, devSize };
+    } else {                                          // data message
+      const d = defs[local];
+      if (!d) throw new Error("bad FIT record");
+      const vals = readFields(d);
+      if (253 in vals) lastTs = vals[253];
+      onMessage(d.gnum, vals);
+    }
+  }
+}
+
+/** Adds SpO2 readings and pulse from one FIT file into the shared maps. */
+function extractFit(buf, spo2, hr) {
+  let monTs = null, found = 0;
+  parseFit(buf, (g, v) => {
+    if (g === 55) {                                   // monitoring: heart rate
+      if (253 in v && !(26 in v)) monTs = v[253];
+      if (26 in v && monTs !== null) {
+        monTs = monTs + ((v[26] - monTs) & 0xFFFF);
+        if (v[27] > 0) hr.set(monTs, v[27]);
+      } else if (v[27] > 0 && 253 in v) {
+        hr.set(v[253], v[27]);
+      }
+    } else if (g === 269 && 253 in v && 0 in v) {     // spo2_data
+      if (v[0] >= 30 && v[0] <= 100) {
+        spo2.set(v[253], [v[253], v[0], v[1] || 0]);
+        found++;
+      }
+    }
+  });
+  return found;
+}
+
+/* ---------- nights ---------- */
+function dayLengthHours(y, m, d) {
+  return (new Date(y, m, d + 1) - new Date(y, m, d)) / 3600000;
+}
+/** OSCAR's day: a reading before noon belongs to the previous evening. */
+function eveningOf(t) {
+  const d = fitToDate(t);
+  const e = d.getHours() >= 12 ? d : new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  return [e.getFullYear(), e.getMonth(), e.getDate()];
+}
+
+function buildNights(spo2, hr) {
+  const readings = [...spo2.values()].sort((a, b) => a[0] - b[0]);
+  const hrTimes = [...hr.keys()].sort((a, b) => a - b);
+  const segments = [];
+  let cur = [], curKey = null;
+  for (const r of readings) {
+    const ev = eveningOf(r[0]);
+    const key = dateKey(...ev);
+    if (cur.length && (r[0] - cur[cur.length - 1][0] > SPLIT_GAP || key !== curKey)) {
+      segments.push({ key: curKey, ev: eveningOfKey(curKey), readings: cur });
+      cur = [];
+    }
+    cur.push(r); curKey = key;
+  }
+  if (cur.length) segments.push({ key: curKey, ev: eveningOfKey(curKey), readings: cur });
+
+  const nights = [];
+  for (const s of segments) {
+    let rs = s.readings, dstTrimmed = 0;
+    const [y, m, d] = s.ev;
+    if (dayLengthHours(y, m, d) !== 24) {             // DST-change evening
+      const before = rs.length;
+      rs = rs.filter((r) => fitToDate(r[0]).getHours() < 12);
+      dstTrimmed = before - rs.length;
+    }
+    if (!rs.length || rs[rs.length - 1][0] - rs[0][0] < MIN_SPAN) continue;
+    const vals = rs.map((r) => r[1]);
+    nights.push({
+      key: s.key, ev: s.ev, readings: rs, dstTrimmed,
+      start: fitToDate(rs[0][0]), end: fitToDate(rs[rs.length - 1][0]),
+      avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+      min: Math.min(...vals),
+      below90: vals.filter((v) => v < 90).length,
+    });
+  }
+  nights.sort((a, b) => b.start - a.start);
+  return { nights, hrTimes };
+}
+function eveningOfKey(key) { const [y, m, d] = key.split("-").map(Number); return [y, m - 1, d]; }
+
+function nearestHr(hrTimes, hr, t, tol) {
+  let lo = 0, hi = hrTimes.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (hrTimes[mid] < t) lo = mid + 1; else hi = mid; }
+  let best = null;
+  for (const j of [lo - 1, lo]) {
+    if (j >= 0 && j < hrTimes.length && Math.abs(hrTimes[j] - t) <= tol) {
+      if (best === null || Math.abs(hrTimes[j] - t) < Math.abs(best - t)) best = hrTimes[j];
+    }
+  }
+  return best === null ? 0 : hr.get(best);
+}
+
+function perSecond(rs) {
+  const start = rs[0][0], stop = rs[rs.length - 1][0] + 60;
+  const arr = new Uint8Array(stop - start);
+  rs.forEach(([t, v], i) => {
+    const next = i + 1 < rs.length ? rs[i + 1][0] : t + 60;
+    const lim = Math.min(next, t + MAX_HOLD);
+    for (let s = t; s < lim; s++) arr[s - start] = v;
+  });
+  return { start, arr };
+}
+
+/* ---------- writers ---------- */
+function writeViatom(night, hrTimes, hr) {
+  const { start, arr } = perSecond(night.readings);
+  const n = Math.min(Math.floor(arr.length / VIATOM_STEP), Math.floor(65535 / VIATOM_STEP));
+  const out = new Uint8Array(40 + n * 5);
+  const o2s = [], prs = [];
+  for (let k = 0; k < n; k++) {
+    const t = start + k * VIATOM_STEP;
+    let o2 = arr[k * VIATOM_STEP];
+    const pr = o2 ? nearestHr(hrTimes, hr, t, 300) : 0;
+    const p = 40 + k * 5;
+    if (o2 && pr >= 30 && pr <= 250) {
+      if (o2 < 61) o2 = 0xFF; else o2s.push(o2);
+      prs.push(pr);
+      out[p] = o2; out[p + 1] = pr;
+    } else {
+      out[p] = 0xFF; out[p + 1] = 0xFF; out[p + 2] = 0xFF;
+    }
+  }
+  const d = fitToDate(start);
+  const dv = new DataView(out.buffer);
+  dv.setUint16(0, 5, true);
+  dv.setUint16(2, d.getFullYear(), true);
+  out[4] = d.getMonth() + 1; out[5] = d.getDate();
+  out[6] = d.getHours(); out[7] = d.getMinutes(); out[8] = d.getSeconds();
+  const size = out.length;
+  out[9] = size & 0xFF; out[10] = (size >> 8) & 0xFF; out[11] = (size >> 16) & 0xFF;
+  dv.setUint16(13, n * VIATOM_STEP, true);
+  if (o2s.length) {
+    out[17] = Math.round(o2s.reduce((a, b) => a + b, 0) / o2s.length);
+    out[18] = Math.min(...o2s);
+    dv.setUint16(22, Math.min(65535, VIATOM_STEP * o2s.filter((v) => v < 90).length), true);
+  }
+  if (prs.length) out[30] = Math.min(255, Math.round(prs.reduce((a, b) => a + b, 0) / prs.length));
+  return { name: `oscar_viatom/Garmin_${stamp14(d)}`, data: out };
+}
+
+function writeMd300(night, hrTimes, hr) {
+  const { start, arr } = perSecond(night.readings);
+  const n = Math.min(arr.length, 65535);
+  const out = new Uint8Array(3 + n * 11);
+  out[1] = n & 0xFF; out[2] = n >> 8;
+  for (let k = 0; k < n; k++) {
+    const t = start + k;
+    const d = fitToDate(t);
+    const o2 = arr[k];
+    const pr = o2 ? nearestHr(hrTimes, hr, t, 90) : 0;
+    const p = 3 + k * 11;
+    out[p + 3] = d.getFullYear() % 100; out[p + 4] = d.getMonth() + 1; out[p + 5] = d.getDate();
+    out[p + 6] = d.getHours(); out[p + 7] = d.getMinutes(); out[p + 8] = d.getSeconds();
+    out[p + 9] = o2; out[p + 10] = Math.min(pr, 255);
+  }
+  return { name: `md300/garmin_spo2_${stamp14(fitToDate(start))}.dat`, data: out };
+}
+
+function writeCsv(night, hrTimes, hr) {
+  const lines = ["Time,SpO2,Pulse,Confidence"];
+  for (const [t, v, c] of night.readings) {
+    lines.push(`${isoLocal(fitToDate(t))},${v},${nearestHr(hrTimes, hr, t, 90)},${c}`);
+  }
+  return { name: `csv/garmin_spo2_${stamp14(night.start)}.csv`, data: new TextEncoder().encode(lines.join("\n") + "\n") };
+}
+
+/* ---------- ZIP writing (stored, no compression) ---------- */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(u8) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const crc = crc32(f.data);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);
+    h.setUint16(8, 0, true); h.setUint16(10, dosTime, true); h.setUint16(12, dosDate, true);
+    h.setUint32(14, crc, true); h.setUint32(18, f.data.length, true); h.setUint32(22, f.data.length, true);
+    h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+    parts.push(h.buffer, name, f.data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true); c.setUint16(12, dosTime, true);
+    c.setUint16(14, dosDate, true); c.setUint32(16, crc, true); c.setUint32(20, f.data.length, true);
+    c.setUint32(24, f.data.length, true); c.setUint16(28, name.length, true);
+    c.setUint32(42, offset, true);
+    central.push(c.buffer, name);
+    offset += 30 + name.length + f.data.length;
+  }
+  const cdSize = central.reduce((s, b) => s + b.byteLength, 0);
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true);
+  e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+  e.setUint32(12, cdSize, true); e.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, e.buffer], { type: "application/zip" });
+}
+
+/* ---------- UI ---------- */
+function selectedNights() {
+  const from = $("fromDate").value;
+  return state.nights.filter((n) => !from || n.key >= from);
+}
+function formatChoice() { return document.querySelector('input[name="format"]:checked').value; }
+
+function sparkline(night) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  const W = 600, H = 52, t0 = night.readings[0][0];
+  const span = Math.max(60, night.readings[night.readings.length - 1][0] + 60 - t0);
+  const y = (v) => (H - 2) - (Math.max(80, Math.min(100, v)) - 80) / 20 * (H - 4);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `SpO2 trace, average ${night.avg.toFixed(1)} percent, minimum ${night.min} percent`);
+  const line = document.createElementNS(ns, "line");
+  line.setAttribute("x1", 0); line.setAttribute("x2", W);
+  line.setAttribute("y1", y(90)); line.setAttribute("y2", y(90));
+  svg.appendChild(line);
+  let d = "", prevT = null;
+  for (const [t, v] of night.readings) {
+    const x = (t - t0) / span * W;
+    if (prevT === null || t - prevT > MAX_HOLD) d += `M${x.toFixed(1)} ${y(v).toFixed(1)}`;
+    else d += `V${y(v).toFixed(1)}`;
+    const x2 = (Math.min(t + 60, t + MAX_HOLD) - t0) / span * W;
+    d += `H${x2.toFixed(1)}`;
+    prevT = t;
+  }
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return svg;
+}
+
+const dayFmt = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+
+function renderNights() {
+  const list = $("nights");
+  list.textContent = "";
+  const sel = selectedNights();
+  const shown = state.showAll ? sel : sel.slice(0, LIST_LIMIT);
+  for (const n of shown) {
+    const li = document.createElement("li");
+    li.className = "night";
+    const left = document.createElement("div");
+    const h3 = document.createElement("h3");
+    h3.textContent = `Night of ${dayFmt.format(new Date(...n.ev))}`;
+    const when = document.createElement("div");
+    when.className = "when";
+    when.textContent = `${hhmm(n.start)} to ${hhmm(n.end)}`;
+    const stats = document.createElement("div");
+    stats.className = "stats";
+    stats.innerHTML = `avg <b>${n.avg.toFixed(1)}%</b>, min <b>${n.min}%</b>, <b>${n.below90}</b> min under 90%`;
+    left.append(h3, when, stats);
+    const right = document.createElement("div");
+    right.appendChild(sparkline(n));
+    li.append(left, right);
+    if (n.dstTrimmed) {
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = `Daylight saving time changed that day: ${n.dstTrimmed} readings before midnight were left out so OSCAR shows the right times.`;
+      li.appendChild(note);
+    }
+    list.appendChild(li);
+  }
+  const more = $("showAll");
+  if (sel.length > LIST_LIMIT) {
+    more.classList.remove("hidden");
+    more.textContent = state.showAll ? `Show the latest ${LIST_LIMIT} nights only` : `Show all ${sel.length} nights`;
+  } else {
+    more.classList.add("hidden");
+  }
+  const fmt = formatChoice();
+  $("downloadInfo").textContent = sel.length
+    ? `${sel.length} night${sel.length > 1 ? "s" : ""} selected`
+    : "No nights in this range";
+  $("downloadBtn").disabled = !sel.length;
+  $("stepsViatom").classList.toggle("hidden", fmt !== "viatom");
+  $("stepsMd300").classList.toggle("hidden", fmt !== "md300");
+}
+
+function renderSummary(fileCount) {
+  const n = state.nights;
+  const first = n[n.length - 1], last = n[0];
+  const s = $("summary");
+  s.textContent = "";
+  const add = (big, small) => {
+    const d = document.createElement("div");
+    const b = document.createElement("b");
+    b.textContent = big;
+    d.append(b, small);
+    s.appendChild(d);
+  };
+  add(String(n.length), n.length > 1 ? "nights with SpO2" : "night with SpO2");
+  add(`${dayFmt.format(new Date(...first.ev))}`, "first night");
+  add(`${dayFmt.format(new Date(...last.ev))}`, "latest night");
+  add(String(fileCount), "files read");
+}
+
+async function handleFiles(fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  $("results").classList.add("hidden");
+  $("downloadStatus").textContent = "";
+  state.nights = []; state.showAll = false;
+  try {
+    const fits = [];
+    for (const f of files) {
+      const lower = f.name.toLowerCase();
+      if (lower.endsWith(".fit")) fits.push({ name: f.name, read: () => f.arrayBuffer() });
+      else if (lower.endsWith(".zip")) await collectFitFiles(f, f.name, fits, 0);
+    }
+    if (!fits.length) {
+      setProgress(); setStatus("No .fit files found. Drop the .zip from Garmin Connect or .fit files.", true);
+      return;
+    }
+    const wellness = fits.filter((f) => /wellness/i.test(f.name));
+    const todo = wellness.length ? wellness : fits;
+    const spo2 = new Map(), hr = new Map();
+    let read = 0;
+    for (const f of todo) {
+      try { extractFit(await f.read(), spo2, hr); } catch (err) { /* skip unreadable file */ }
+      read++;
+      if (read % 5 === 0 || read === todo.length) {
+        setStatus(`Reading ${read} of ${todo.length} files…`);
+        setProgress(read, todo.length);
+        await tick();
+      }
+    }
+    setProgress();
+    const built = buildNights(spo2, hr);
+    state.nights = built.nights; state.hr = hr; state.hrTimes = built.hrTimes;
+    if (!state.nights.length) {
+      setStatus(spo2.size
+        ? "SpO2 readings were found, but no recording lasts 30 minutes or more."
+        : "No SpO2 readings found. Check that Pulse Ox is set to “During sleep” on the watch, and that the export contains WELLNESS .fit files.", true);
+      return;
+    }
+    setStatus("");
+    renderSummary(todo.length);
+    renderNights();
+    $("results").classList.remove("hidden");
+    $("resultsTitle").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  } catch (err) {
+    setProgress();
+    setStatus(`Could not read the files: ${err.message}.`, true);
+  }
+}
+
+/* Downloads: the claude.ai viewer offers a save capability; elsewhere a normal link works. */
+const downloadsReady = (window.claude && typeof window.claude.use === "function")
+  ? window.claude.use("downloads").catch(() => null)
+  : Promise.resolve(null);
+
+async function download() {
+  const sel = selectedNights();
+  if (!sel.length) return;
+  const fmt = formatChoice();
+  const files = [];
+  for (const n of sel) {
+    files.push(fmt === "md300" ? writeMd300(n, state.hrTimes, state.hr) : writeViatom(n, state.hrTimes, state.hr));
+    if ($("withCsv").checked) files.push(writeCsv(n, state.hrTimes, state.hr));
+  }
+  const blob = makeZip(files);
+  const filename = "garmin-spo2-for-oscar.zip";
+  const msg = $("downloadStatus");
+  msg.textContent = "";
+  const inClaude = window.claude && typeof window.claude.use === "function";
+  if (inClaude) {
+    const downloads = await downloadsReady;
+    if (downloads) {
+      try {
+        await downloads.save({ filename, data: blob });
+        msg.textContent = "Downloaded. Unzip it, then follow the steps below.";
+      } catch (err) {
+        if (err && err.code === "declined") msg.textContent = "Download cancelled.";
+        else if (err && err.code === "rate_limited") msg.textContent = "A save prompt is already open. Try again in a moment.";
+        else msg.textContent = "Saving files isn’t available in this view. Open the page in a browser to download.";
+      }
+      return;
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  msg.textContent = "Downloaded. Unzip it, then follow the steps below.";
+}
+
+/* ---------- wiring ---------- */
+$("tzName").textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+const drop = $("drop");
+$("fileInput").addEventListener("change", (e) => { handleFiles(e.target.files); e.target.value = ""; });
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
+document.querySelectorAll('input[name="format"]').forEach((r) => r.addEventListener("change", renderNights));
+$("fromDate").addEventListener("change", renderNights);
+$("clearDate").addEventListener("click", () => { $("fromDate").value = ""; renderNights(); });
+$("showAll").addEventListener("click", () => { state.showAll = !state.showAll; renderNights(); });
+$("downloadBtn").addEventListener("click", download);
+if (typeof DecompressionStream === "undefined") {
+  setStatus("This browser is too old to open .zip files. Use a recent Chrome, Edge, Firefox or Safari.", true);
+}
+</script>
+</body>
+</html>
