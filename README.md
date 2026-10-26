@@ -14,7 +14,7 @@ done.
 
 # garmin2oscar
 
-Import the overnight **SpO2, pulse, motions, sleep stages** recorded by a Garmin watch into
+Import the overnight **SpO2, pulse, motions, sleep stages, breathing disruptions** recorded by a Garmin watch into
 [OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
 
 OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
@@ -26,6 +26,9 @@ OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
 - Writes **one file per night**, imported all at once with OSCAR's
   **Import Viatom/Wellue data** (already-imported nights are skipped).
 - Also writes a readable `.csv` per night (`Time,SpO2,Pulse,Confidence`).
+- Exports Garmin's **breathing disruptions** ("breathing variations") as two `.csv` files:
+  a summary per night and every period. OSCAR can't display them; open them in a
+  spreadsheet to compare their trend with your CPAP's AHI.
 - Converts the **sleep stages** (deep, light, REM, awake) into one file for OSCAR's
   **Import Dreem data**, so OSCAR shows a sleep-stage graph next to your CPAP data.
 - Handles daylight saving time. On a night that starts on a DST-change day,
@@ -82,6 +85,8 @@ python3 fit2oscar_spo2.py *_WELLNESS.fit
 3. Select all files (Cmd+A / Ctrl+A) and confirm.
 4. For sleep stages, choose **Import Dreem data** and pick
    `oscar_dreem/garmin_sleep_stages.csv`. Nights already imported are skipped.
+5. With `--breathing-as-position` (or the matching box on the web page), choose
+   **Import Somnopose data** and pick `oscar_somnopose/garmin_breathing_somnopose.csv`.
 
 Prefer the Oximetry Wizard? Add `--format md300` to get ChoiceMMed `.dat` files.
 Import them one night at a time with *Import from a data file* and choose
@@ -95,6 +100,8 @@ restart OSCAR before the next one.
 | `--format viatom\|md300` | Output format (default `viatom`) |
 | `--no-csv` | Don't write the `.csv` files |
 | `--no-stages` | Don't write the sleep-stage file |
+| `--no-breathing` | Don't write the breathing-disruption files |
+| `--breathing-as-position` | Also write the breathing disruptions for OSCAR's **Import Somnopose data**: they appear as an "Orientation" graph (0 not measured, 10 none, 20 low, 30 medium, 40 high). Off by default. |
 | `--timezone Europe/Paris` | Time zone (default: the computer's) |
 | `--min-minutes 30` | Ignore recordings shorter than this (daytime spot checks) |
 | `--min-confidence N` | Drop readings below Garmin's confidence value N (see caveats) |
@@ -115,6 +122,8 @@ restart OSCAR before the next one.
   use and can break at any time. `fit2oscar_spo2.py` with exported files is unaffected.
 - **Sleep stages** are the watch's estimates (from heart rate and movement), not an EEG
   measurement like in a sleep lab.
+- **Breathing disruptions** are Garmin's own estimate, only measured while Pulse Ox
+  records. They are not apneas as scored by a CPAP.
 - **Duplicates.** A night imported through both the wizard and the Viatom import
   appears twice in OSCAR. Purge one first.
 - **Tested hardware.** Tested with a Garmin Venu 4 only. Feedback for other models is welcome.
@@ -128,4 +137,5 @@ The included `.gitignore` already excludes them.
 
 Not affiliated with Garmin or the OSCAR team. Not a medical device. For
 information only; talk to your doctor about your results.
+
 
