@@ -181,6 +181,10 @@ progress { width: 100%; height: .5rem; accent-color: var(--spo2); }
 .night svg { width: 100%; height: 3.25rem; display: block; }
 .night svg path { fill: none; stroke: var(--spo2); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
 .night svg line { stroke: var(--pulse); stroke-dasharray: 3 4; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .7; }
+.night svg rect.br-low { fill: var(--warn); opacity: .16; }
+.night svg rect.br-medium { fill: var(--warn); opacity: .32; }
+.night svg rect.br-high { fill: var(--pulse); opacity: .35; }
+.legend-swatch { display: inline-block; width: .9em; height: .9em; border-radius: 2px; background: var(--warn); opacity: .45; vertical-align: -.1em; margin-right: .3em; }
 .night .note {
   grid-column: 1 / -1;
   font-size: .88rem;
@@ -244,6 +248,12 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <div class="inline" id="stagesOption">
         <label><input type="checkbox" id="withStages" checked> <span>Include sleep stages <small>Deep, light, REM and awake, as one file for “Import Dreem data”.</small></span></label>
       </div>
+      <div class="inline" id="breathingOption">
+        <label><input type="checkbox" id="withBreathing" checked> <span>Include breathing disruptions <small>Two .csv files for a spreadsheet: a summary per night and every period. OSCAR can’t display them.</small></span></label>
+      </div>
+      <div class="inline hidden" id="breathingPosOption">
+        <label><input type="checkbox" id="breathingAsPosition"> <span>Also show breathing disruptions in OSCAR <small>A file for “Import Somnopose data”: OSCAR shows it as an “Orientation” graph (0 not measured, 10 none, 20 low, 30 medium, 40 high). Movement and oximetry are unchanged.</small></span></label>
+      </div>
       <div class="inline">
         <label for="fromDate">Only nights from</label>
         <input type="date" id="fromDate">
@@ -257,6 +267,7 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
     </div>
     <div class="status" id="downloadStatus" role="status" aria-live="polite"></div>
 
+    <p class="fine hidden" id="breathingLegend"><span class="legend-swatch" aria-hidden="true"></span>Shaded areas on a trace: breathing disruptions detected by the watch (darker means more severe).</p>
     <ul class="nights" id="nights"></ul>
     <p><button type="button" class="link-button hidden" id="showAll"></button></p>
 
@@ -273,10 +284,12 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <li>If you abandon an import halfway, restart OSCAR before the next one.</li>
     </ol>
     <p id="stagesStep" class="hidden">Sleep stages: in OSCAR, choose <b>Import Dreem data</b> and pick <b>garmin_sleep_stages.csv</b> in the <b>oscar_dreem</b> folder. Nights already imported are skipped, and OSCAR shows a sleep-stage graph.</p>
+    <p id="somnoStep" class="hidden">Breathing disruptions: in OSCAR, choose <b>Import Somnopose data</b> and pick <b>garmin_breathing_somnopose.csv</b> in the <b>oscar_somnopose</b> folder. They appear in the <b>Orientation</b> graph: 0 not measured, 10 none, 20 low, 30 medium, 40 high.</p>
   </section>
 
   <footer>
     <p class="fine">Everything runs in your browser: your files are never uploaded anywhere. Times use this computer’s time zone (<span id="tzName"></span>).</p>
+    <p class="fine">Breathing disruptions are Garmin’s own estimate from the watch’s SpO2 and breathing data. They are only measured while Pulse Ox is recording, and they are not apneas as counted by a CPAP: compare their trend with your AHI, not minute by minute.</p>
     <p class="fine">Sleep movement isn’t stored in .fit files. It’s added when you also drop Garmin sleep .json files that contain it, such as the sleep.json files saved by the garmin2oscar Python script; it then appears as OSCAR’s Movement graph (Viatom format only, value = Garmin activity level × 10).</p>
     <p class="fine">On a night that starts on a daylight-saving-change day, readings before midnight are left out, otherwise OSCAR labels that night’s time axis one hour off.</p>
     <p class="fine">A wrist sensor is not a medical oximeter: one reading per minute, and flat plateaus often mean poor contact. Talk to your doctor about your results.</p>
@@ -648,6 +661,98 @@ function writeDreem(stages) {
   return { name: "oscar_dreem/garmin_sleep_stages.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") };
 }
 
+/* ---------- breathing disruptions (Garmin “breathing variations”) -> CSV ---------- */
+const SEVERITY = { 0: "none", 1: "low", 2: "medium", 3: "high" };
+const SEVERITY_JSON = { NONE: "none", LOW: "low", MINIMAL: "low", MEDIUM: "medium", MODERATE: "medium", HIGH: "high" };
+
+/** SLEEP_DISRUPTIONS .fit: each period message closes the period begun at the previous one. */
+function extractDisruptionsFit(buf) {
+  const marks = [];
+  let overall = null;
+  parseFit(buf, (g, v) => {
+    if (g === 470 && 253 in v) marks.push([v[253], 0 in v ? (SEVERITY[v[0]] || "not measured") : "not measured"]);
+    else if (g === 471 && 0 in v) overall = SEVERITY[v[0]] || null;
+  });
+  marks.sort((a, b) => a[0] - b[0]);
+  if (marks.length < 2) return [];
+  const periods = [];
+  for (let i = 1; i < marks.length; i++) if (marks[i][0] > marks[i - 1][0]) periods.push([marks[i - 1][0], marks[i][0], marks[i][1]]);
+  return [{ start: marks[0][0], stop: marks[marks.length - 1][0], periods, overall }];
+}
+
+/** Garmin Connect sleep JSON: every object with a "breathingDisruptionData" list. */
+function extractBreathingJson(obj, out, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 5) return;
+  if (Array.isArray(obj)) { obj.forEach((o) => extractBreathingJson(o, out, depth + 1)); return; }
+  if (Array.isArray(obj.breathingDisruptionData)) {
+    const periods = [];
+    for (const it of obj.breathingDisruptionData) {
+      const t0 = gmtToFit(it && it.startGMT), t1 = gmtToFit(it && it.endGMT);
+      if (t0 !== null && t1 !== null && t1 > t0) periods.push([t0, t1, SEVERITY[it.value] || "not measured"]);
+    }
+    if (periods.length) {
+      periods.sort((a, b) => a[0] - b[0]);
+      const dto = obj.dailySleepDTO || {};
+      out.push({ start: periods[0][0], stop: periods[periods.length - 1][1], periods,
+        overall: SEVERITY_JSON[String(dto.breathingDisruptionSeverity || "").toUpperCase()] || null, fromJson: true });
+    }
+  }
+  for (const k in obj) if (k !== "breathingDisruptionData" && obj[k] && typeof obj[k] === "object") extractBreathingJson(obj[k], out, depth + 1);
+}
+
+function buildBreathing(sessions) {
+  const byKey = new Map();
+  for (const s of sessions) {
+    const key = dateKey(...eveningOf(s.start));
+    const cur = byKey.get(key);
+    if (!cur || (s.fromJson && !cur.fromJson)) byKey.set(key, s);
+  }
+  return [...byKey].map(([key, s]) => {
+    const mins = { none: 0, low: 0, medium: 0, high: 0, "not measured": 0 };
+    for (const [t0, t1, sev] of s.periods) mins[sev] += (t1 - t0) / 60;
+    return { ...s, key, mins };
+  }).sort((a, b) => a.start - b.start);
+}
+
+function writeBreathing(list) {
+  const enc = new TextEncoder();
+  const sum = ["Night,Start,End,Overall,None (min),Low (min),Medium (min),High (min),Not measured (min)"];
+  const per = ["Night,Start,End,Minutes,Severity"];
+  for (const s of list) {
+    for (const [t0, t1, sev] of s.periods) {
+      per.push(`${s.key},${isoLocal(fitToDate(t0))},${isoLocal(fitToDate(t1))},${((t1 - t0) / 60).toFixed(0)},${sev}`);
+    }
+    sum.push(`${s.key},${isoLocal(fitToDate(s.start))},${isoLocal(fitToDate(s.stop))},${s.overall || ""},`
+      + ["none", "low", "medium", "high", "not measured"].map((k) => s.mins[k].toFixed(0)).join(","));
+  }
+  return [
+    { name: "breathing/garmin_breathing_summary.csv", data: enc.encode(sum.join("\n") + "\n") },
+    { name: "breathing/garmin_breathing_periods.csv", data: enc.encode(per.join("\n") + "\n") },
+  ];
+}
+
+const SOMNO_VALUE = { "not measured": 0, none: 10, low: 20, medium: 30, high: 40 };
+const SOMNO_EPOCH = 978307200 - FIT_TO_UNIX;      // 2001-01-01 UTC in FIT seconds
+/** Breathing disruptions as a Somnopose file: OSCAR shows the Orientation column as its own graph. */
+function writeSomnopose(list) {
+  const lines = ["Timestamp,Orientation"];
+  for (const s of list) {
+    let periods = s.periods;
+    const [y, m, d] = eveningOfKey(s.key);
+    if (dayLengthHours(y, m, d) !== 24) {           // DST evening: start at midnight, as for the oximetry
+      const midnight = Math.round(new Date(y, m, d + 1).getTime() / 1000) - FIT_TO_UNIX;
+      if (s.start < midnight) periods = periods.filter((p) => p[1] > midnight).map((p) => [Math.max(p[0], midnight), p[1], p[2]]);
+    }
+    if (!periods.length) continue;
+    for (const [t0, t1, sev] of periods) {
+      const v = SOMNO_VALUE[sev] || 0;
+      lines.push(`${t0 - SOMNO_EPOCH},${v}`, `${t1 - SOMNO_EPOCH},${v}`);
+    }
+    lines.push("-");
+  }
+  return { name: "oscar_somnopose/garmin_breathing_somnopose.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") };
+}
+
 /* ---------- nights ---------- */
 function dayLengthHours(y, m, d) {
   return (new Date(y, m, d + 1) - new Date(y, m, d)) / 3600000;
@@ -860,6 +965,19 @@ function sparkline(night) {
   line.setAttribute("x1", 0); line.setAttribute("x2", W);
   line.setAttribute("y1", y(90)); line.setAttribute("y2", y(90));
   svg.appendChild(line);
+  const br = (state.breathing || []).find((b) => b.key === night.key);
+  if (br) {
+    for (const [b0, b1, sev] of br.periods) {
+      if (sev !== "low" && sev !== "medium" && sev !== "high") continue;
+      const x0 = Math.max(0, (b0 - t0) / span * W), x1 = Math.min(W, (b1 - t0) / span * W);
+      if (x1 <= x0) continue;
+      const r = document.createElementNS(ns, "rect");
+      r.setAttribute("class", `br-${sev}`);
+      r.setAttribute("x", x0.toFixed(1)); r.setAttribute("width", (x1 - x0).toFixed(1));
+      r.setAttribute("y", 0); r.setAttribute("height", H);
+      svg.insertBefore(r, line);
+    }
+  }
   let d = "", prevT = null;
   for (const [t, v] of night.readings) {
     const x = (t - t0) / span * W;
@@ -894,6 +1012,11 @@ function renderNights() {
     const stats = document.createElement("div");
     stats.className = "stats";
     const extras = [n.hasMovement ? "movement" : "", stageKeys().has(n.key) ? "sleep stages" : ""].filter(Boolean);
+    const brN = (state.breathing || []).find((b) => b.key === n.key);
+    if (brN) {
+      const parts = ["low", "medium", "high"].filter((k) => brN.mins[k] >= 1).map((k) => `${k} ${brN.mins[k].toFixed(0)} min`);
+      extras.push("breathing disruptions " + (parts.length ? parts.join(", ") : "none"));
+    }
     stats.innerHTML = `avg <b>${n.avg.toFixed(1)}%</b>, min <b>${n.min}%</b>, <b>${n.below90}</b> min under 90%`
       + (extras.length ? `, with ${extras.join(" and ")}` : "");
     left.append(h3, when, stats);
@@ -920,8 +1043,14 @@ function renderNights() {
   const parts = [];
   if (sel.length) parts.push(`${sel.length} night${sel.length > 1 ? "s" : ""} of SpO2`);
   if (st.length) parts.push(`${st.length} night${st.length > 1 ? "s" : ""} of sleep stages`);
+  const bs = selectedBreathing();
+  if (bs.length) parts.push(`${bs.length} night${bs.length > 1 ? "s" : ""} of breathing disruptions`);
   $("downloadInfo").textContent = parts.length ? parts.join(", ") + " selected" : "No nights in this range";
-  $("downloadBtn").disabled = !sel.length && !st.length;
+  $("downloadBtn").disabled = !sel.length && !st.length && !bs.length;
+  $("breathingOption").classList.toggle("hidden", !state.breathing.length);
+  $("breathingLegend").classList.toggle("hidden", !state.breathing.length);
+  $("breathingPosOption").classList.toggle("hidden", !state.breathing.length);
+  $("somnoStep").classList.toggle("hidden", !(state.breathing.length && $("breathingAsPosition").checked));
   $("stagesOption").classList.toggle("hidden", !state.stages.length);
   $("stagesStep").classList.toggle("hidden", !st.length);
   $("stepsViatom").classList.toggle("hidden", fmt !== "viatom");
@@ -929,6 +1058,10 @@ function renderNights() {
 }
 
 function stageKeys() { return new Set(state.stages.map((s) => s.key)); }
+function selectedBreathing() {
+  const from = $("fromDate").value;
+  return $("withBreathing").checked ? state.breathing.filter((s) => !from || s.key >= from) : [];
+}
 function selectedStages() {
   const from = $("fromDate").value;
   return $("withStages").checked ? state.stages.filter((s) => !from || s.key >= from) : [];
@@ -949,6 +1082,7 @@ function renderSummary(fileCount) {
   };
   add(String(n.length), n.length === 1 ? "night with SpO2" : "nights with SpO2");
   if (state.stages.length) add(String(state.stages.length), state.stages.length === 1 ? "night with sleep stages" : "nights with sleep stages");
+  if (state.breathing.length) add(String(state.breathing.length), state.breathing.length === 1 ? "night with breathing data" : "nights with breathing data");
   add(`${dayFmt.format(new Date(...first.ev))}`, "first night");
   add(`${dayFmt.format(new Date(...last.ev))}`, "latest night");
   add(String(fileCount), "files read");
@@ -961,7 +1095,7 @@ async function handleFiles(fileList) {
   if (!files.length) return;
   $("results").classList.add("hidden");
   $("downloadStatus").textContent = "";
-  state.nights = []; state.stages = []; state.showAll = false;
+  state.nights = []; state.stages = []; state.breathing = []; state.showAll = false;
   try {
     const fits = [];
     for (const f of files) {
@@ -971,12 +1105,13 @@ async function handleFiles(fileList) {
       else if (lower.endsWith(".zip")) await collectFitFiles(f, f.name, fits, 0);
     }
     state.movement = new Map();
-    const sleepSessions = [];
+    const sleepSessions = [], breathingSessions = [];
     for (const j of fits.filter((x) => x.json)) {
       try {
         const obj = JSON.parse(new TextDecoder().decode(await j.read()));
         extractMovement(obj, state.movement);
         extractSleepJson(obj, sleepSessions);
+        extractBreathingJson(obj, breathingSessions);
       } catch (err) { /* not JSON */ }
     }
     fits.splice(0, fits.length, ...fits.filter((x) => !x.json));
@@ -985,7 +1120,7 @@ async function handleFiles(fileList) {
       return;
     }
     const wellness = fits.filter((f) => /wellness/i.test(f.name));
-    const sleepFits = fits.filter((f) => /sleep_data/i.test(f.name));
+    const sleepFits = fits.filter((f) => /sleep_data|sleep_disruptions/i.test(f.name));
     const todo = wellness.length ? [...wellness, ...sleepFits] : fits;
     const spo2 = new Map(), hr = new Map();
     let read = 0;
@@ -994,6 +1129,7 @@ async function handleFiles(fileList) {
         const buf = await f.read();
         if (!wellness.length || /wellness/i.test(f.name)) extractFit(buf, spo2, hr);
         if (!wellness.length || /sleep_data/i.test(f.name)) sleepSessions.push(...extractSleepFit(buf));
+        if (!wellness.length || /sleep_disruptions/i.test(f.name)) breathingSessions.push(...extractDisruptionsFit(buf));
       } catch (err) { /* skip unreadable file */ }
       read++;
       if (read % 5 === 0 || read === todo.length) {
@@ -1006,7 +1142,8 @@ async function handleFiles(fileList) {
     const built = buildNights(spo2, hr);
     state.nights = built.nights; state.hr = hr; state.hrTimes = built.hrTimes;
     state.stages = buildStages(sleepSessions);
-    if (!state.nights.length && !state.stages.length) {
+    state.breathing = buildBreathing(breathingSessions);
+    if (!state.nights.length && !state.stages.length && !state.breathing.length) {
       setStatus(spo2.size
         ? "SpO2 readings were found, but no recording lasts 30 minutes or more."
         : "No SpO2 readings found. Check that Pulse Ox is set to “During sleep” on the watch, and that the export contains WELLNESS .fit files.", true);
@@ -1038,6 +1175,13 @@ async function download() {
   }
   const st = selectedStages();
   if (st.length) files.push(writeDreem(st));
+  const bs = selectedBreathing();
+  if (bs.length) files.push(...writeBreathing(bs));
+  if ($("breathingAsPosition").checked && state.breathing.length) {
+    const from = $("fromDate").value;
+    const list = state.breathing.filter((s) => !from || s.key >= from);
+    if (list.length) files.push(writeSomnopose(list));
+  }
   if (!files.length) return;
   const blob = makeZip(files);
   const filename = "garmin-spo2-for-oscar.zip";
@@ -1076,6 +1220,8 @@ drop.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
 document.querySelectorAll('input[name="format"]').forEach((r) => r.addEventListener("change", renderNights));
 $("fromDate").addEventListener("change", renderNights);
 $("withStages").addEventListener("change", renderNights);
+$("withBreathing").addEventListener("change", renderNights);
+$("breathingAsPosition").addEventListener("change", renderNights);
 $("clearDate").addEventListener("click", () => { $("fromDate").value = ""; renderNights(); });
 $("showAll").addEventListener("click", () => { state.showAll = !state.showAll; renderNights(); });
 $("downloadBtn").addEventListener("click", download);

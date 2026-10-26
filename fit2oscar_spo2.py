@@ -13,6 +13,10 @@ Sleep stages (SLEEP_DATA .fit files) are written to
 ./oscar_dreem/garmin_sleep_stages.csv, one row per night, to import with
 "Import Dreem data". OSCAR then shows a sleep-stage graph.
 
+Garmin's breathing disruptions (SLEEP_DISRUPTIONS .fit files) are written to
+./breathing/: one summary row per night and one row per period. OSCAR has no
+place for them, so they are for a spreadsheet, next to the CPAP's AHI.
+
 No external dependencies: Python 3.9+ is enough.
 
 Usage:
@@ -29,6 +33,11 @@ Options:
     --no-csv             do not write the human-readable .csv
     --format FMT         viatom (default) or md300
     --no-stages          do not write the sleep-stage file
+    --no-breathing       do not write the breathing-disruption files
+    --breathing-as-position
+                         also write the breathing disruptions as a Somnopose
+                         file: OSCAR shows them as an "Orientation" graph
+                         (0 not measured, 10 none, 20 low, 30 medium, 40 high)
 
 md300 .dat format (read by MD300W1Loader::readDATFile in OSCAR):
     byte 0: id, bytes 1-2: number of records (little-endian)
@@ -502,6 +511,147 @@ def fit_to_ts_from_string(value):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Breathing disruptions (Garmin "breathing variations") -> CSV
+# ---------------------------------------------------------------------------
+MSG_DISRUPTION_PERIOD = 470     # 253 timestamp = END of the period, 0 severity
+MSG_DISRUPTION_OVERNIGHT = 471  # 0 severity for the whole night
+SEVERITY = {0: "none", 1: "low", 2: "medium", 3: "high"}
+SEVERITY_JSON = {"NONE": "none", "LOW": "low", "MINIMAL": "low", "MEDIUM": "medium",
+                 "MODERATE": "medium", "HIGH": "high"}
+
+
+def extract_disruptions(path):
+    """Breathing-disruption periods from a SLEEP_DISRUPTIONS .fit file.
+
+    Returns [{"start", "stop", "periods": [(t0, t1, severity)], "overall"}].
+    Each period message closes the period begun at the previous one; a period
+    without severity is "not measured" (as in Garmin Connect's own data).
+    """
+    marks, overall = [], None
+    for gnum, v in parse_fit(path):
+        if gnum == MSG_DISRUPTION_PERIOD and 253 in v:
+            marks.append((v[253], SEVERITY.get(v[0], "not measured") if 0 in v else "not measured"))
+        elif gnum == MSG_DISRUPTION_OVERNIGHT and 0 in v:
+            overall = SEVERITY.get(v[0])
+    marks.sort()
+    if len(marks) < 2:
+        return []
+    periods = [(marks[i - 1][0], marks[i][0], marks[i][1])
+               for i in range(1, len(marks)) if marks[i][0] > marks[i - 1][0]]
+    return [{"start": marks[0][0], "stop": marks[-1][0], "periods": periods, "overall": overall}]
+
+
+def disruptions_from_json(data, to_fit_ts):
+    """Breathing-disruption periods from Garmin Connect sleep JSON."""
+    periods = []
+    for it in (data or {}).get("breathingDisruptionData") or []:
+        t0, t1 = to_fit_ts(it.get("startGMT")), to_fit_ts(it.get("endGMT"))
+        if t0 is None or t1 is None or t1 <= t0:
+            continue
+        periods.append((t0, t1, SEVERITY.get(it.get("value"), "not measured")))
+    if not periods:
+        return []
+    periods.sort()
+    dto = (data or {}).get("dailySleepDTO") or {}
+    overall = SEVERITY_JSON.get(str(dto.get("breathingDisruptionSeverity") or "").upper())
+    return [{"start": periods[0][0], "stop": periods[-1][1], "periods": periods, "overall": overall}]
+
+
+SOMNOPOSE_VALUE = {"not measured": 0, "none": 10, "low": 20, "medium": 30, "high": 40}
+SOMNOPOSE_EPOCH = 978307200 - 631065600   # 2001-01-01 UTC in FIT seconds
+
+
+def _local_midnight(day, tz):
+    """Local midnight starting the given date, as FIT UTC seconds."""
+    t = dt.datetime(day.year, day.month, day.day)
+    if isinstance(tz, int):
+        unix = t.replace(tzinfo=dt.timezone.utc).timestamp() - tz
+    elif tz is None:
+        unix = t.astimezone().timestamp()
+    else:
+        unix = t.replace(tzinfo=tz).timestamp()
+    return int(unix) - 631065600
+
+
+def write_somnopose_csv(path, sessions, tz, keep_dst_evening=False, log=print):
+    """Breathing disruptions as a Somnopose file (OSCAR: "Import Somnopose data").
+
+    OSCAR shows the Orientation column as its own graph, without touching
+    the oximetry. Values: 0 not measured, 10 none, 20 low, 30 medium, 40 high.
+    Timestamps are seconds since 2001-01-01 UTC; a "-" line ends a night. As
+    for the oximetry, a night starting on a DST-change evening begins at
+    midnight, otherwise OSCAR would label its time axis 1 hour off.
+    """
+    uniq = []
+    for sess in sorted(sessions, key=lambda x: x["start"]):
+        if uniq and abs(sess["start"] - uniq[-1]["start"]) < 1800:
+            continue
+        uniq.append(sess)
+    lines = ["Timestamp,Orientation"]
+    nights = 0
+    for sess in uniq:
+        periods = sess["periods"]
+        start = to_local(sess["start"], tz)
+        evening = (start - dt.timedelta(days=1)).date() if start.hour < 12 else start.date()
+        nxt = evening + dt.timedelta(days=1)
+        midnight = _local_midnight(nxt, tz)
+        if (not keep_dst_evening and not isinstance(tz, int)
+                and midnight - _local_midnight(evening, tz) != 86400 and sess["start"] < midnight):
+            periods = [(max(t0, midnight), t1, sev) for t0, t1, sev in periods if t1 > midnight]
+        if not periods:
+            continue
+        for t0, t1, sev in periods:
+            v = SOMNOPOSE_VALUE.get(sev, 0)
+            lines.append(f"{t0 - SOMNOPOSE_EPOCH},{v}")
+            lines.append(f"{t1 - SOMNOPOSE_EPOCH},{v}")
+        lines.append("-")
+        nights += 1
+    if not nights:
+        return None
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    log(f"-> {path}: breathing disruptions for {nights} night(s) "
+        "(0 not measured, 10 none, 20 low, 30 medium, 40 high)")
+    return path
+
+
+def write_breathing_csv(outdir, sessions, tz, log=print):
+    """Writes breathing/garmin_breathing_summary.csv (one row per night) and
+    breathing/garmin_breathing_periods.csv (one row per period)."""
+    uniq = []
+    for sess in sorted(sessions, key=lambda x: x["start"]):
+        if uniq and abs(sess["start"] - uniq[-1]["start"]) < 1800:
+            continue
+        uniq.append(sess)
+    if not uniq:
+        return []
+    folder = os.path.join(outdir, "breathing")
+    os.makedirs(folder, exist_ok=True)
+    levels = ["none", "low", "medium", "high", "not measured"]
+    summary = os.path.join(folder, "garmin_breathing_summary.csv")
+    periods = os.path.join(folder, "garmin_breathing_periods.csv")
+    with open(summary, "w") as fs, open(periods, "w") as fp:
+        fs.write("Night,Start,End,Overall,None (min),Low (min),Medium (min),High (min),Not measured (min)\n")
+        fp.write("Night,Start,End,Minutes,Severity\n")
+        for sess in uniq:
+            start = to_local(sess["start"], tz)
+            night = (start - dt.timedelta(hours=12)).date() if start.hour < 12 else start.date()
+            mins = {k: 0.0 for k in levels}
+            for t0, t1, sev in sess["periods"]:
+                mins[sev] += (t1 - t0) / 60
+                fp.write(f"{night},{to_local(t0, tz):%Y-%m-%d %H:%M:%S},"
+                         f"{to_local(t1, tz):%Y-%m-%d %H:%M:%S},{(t1 - t0) / 60:.0f},{sev}\n")
+            fs.write(f"{night},{start:%Y-%m-%d %H:%M:%S},{to_local(sess['stop'], tz):%Y-%m-%d %H:%M:%S},"
+                     f"{sess.get('overall') or ''},"
+                     + ",".join(f"{mins[k]:.0f}" for k in levels) + "\n")
+            log(f"Breathing disruptions, night of {night}: overall {sess.get('overall') or 'n/a'}, "
+                f"low {mins['low']:.0f} min, medium {mins['medium']:.0f} min, high {mins['high']:.0f} min")
+    log(f"-> {summary}\n-> {periods}")
+    return [summary, periods]
+
+
 def make_tz(name=None, offset_hours=None):
     if offset_hours is not None:
         return int(offset_hours * 3600)
@@ -527,17 +677,24 @@ def main():
                          "'Import Viatom/Wellue data'; md300: .dat for the Oximetry Wizard")
     ap.add_argument("--no-stages", action="store_true",
                     help="don't write the sleep-stage file (Dreem format)")
+    ap.add_argument("--no-breathing", action="store_true",
+                    help="don't write the breathing-disruption .csv files")
+    ap.add_argument("--breathing-as-position", action="store_true",
+                    help="also write the breathing disruptions as a Somnopose file, shown "
+                         "by OSCAR as an Orientation graph (0 not measured, 10 none, "
+                         "20 low, 30 medium, 40 high)")
     a = ap.parse_args()
 
     readings, hr, _ = extract_many(a.fit)
     tz = make_tz(a.timezone, a.tz_offset)
-    sessions = []
+    sessions, breathing = [], []
     for p in a.fit:
         try:
             sessions += extract_sleep(p)
+            breathing += extract_disruptions(p)
         except Exception:
             pass
-    if not readings and not sessions:
+    if not readings and not sessions and not breathing:
         sys.exit("No SpO2 readings or sleep stages found (is SpO2 tracking enabled on the watch?)")
     if readings:
         created = convert(readings, hr, tz, a.outdir, a.min_confidence, a.min_minutes,
@@ -547,6 +704,13 @@ def main():
     if sessions and not a.no_stages:
         write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"), sessions, tz)
         print("Sleep stages: in OSCAR, Import Dreem data and pick oscar_dreem/garmin_sleep_stages.csv")
+    if breathing and not a.no_breathing:
+        write_breathing_csv(a.outdir, breathing, tz)
+    if breathing and a.breathing_as_position:
+        if write_somnopose_csv(os.path.join(a.outdir, "oscar_somnopose", "garmin_breathing_somnopose.csv"),
+                               breathing, tz):
+            print("Breathing disruptions: in OSCAR, Import Somnopose data and pick "
+                  "oscar_somnopose/garmin_breathing_somnopose.csv")
 
 
 if __name__ == "__main__":
