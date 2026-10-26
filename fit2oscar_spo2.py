@@ -211,11 +211,19 @@ def per_second_spo2(seg, max_hold):
     return start, spo2_s
 
 
+def motion_byte(movement, t):
+    """Garmin sleep movement level for the minute containing t, x 10 (0-255)."""
+    if not movement:
+        return 0
+    level = movement.get(t - t % 60)
+    return 0 if level is None else max(0, min(255, round(level * 10)))
+
+
 VIATOM_STEP = 4          # seconds per record, as in Wellue/Viatom O2Ring files
 VIATOM_HEADER = 40
 
 
-def write_viatom(path, seg, hr_times, hr, tz, max_hold):
+def write_viatom(path, seg, hr_times, hr, tz, max_hold, movement=None):
     """Writes a Wellue/Viatom O2Ring file (format 5), read by OSCAR's ViatomLoader.
 
     Header (40 bytes): u16 version=5, u16 year, month, day, hour, min, sec,
@@ -224,6 +232,8 @@ def write_viatom(path, seg, hr_times, hr, tz, max_hold):
     Records (5 bytes, one per 4 s): spo2, pulse, invalid flag, motion, vibration.
     An invalid record is FF FF FF 00 00. OSCAR takes the start time from the
     14-digit local timestamp in the file name.
+    movement: optional {fit_minute_start_utc: Garmin activity level}; stored in
+    the motion byte as level x 10, shown by OSCAR as its Movement graph.
     """
     start, spo2_s = per_second_spo2(seg, max_hold)
     n = min(len(spo2_s) // VIATOM_STEP, 65535 // VIATOM_STEP)
@@ -233,15 +243,16 @@ def write_viatom(path, seg, hr_times, hr, tz, max_hold):
         t = start + k * VIATOM_STEP
         o2 = spo2_s[k * VIATOM_STEP]
         pr = nearest_hr(hr_times, hr, t, tol=300) if o2 else 0
+        mv = motion_byte(movement, t)
         if o2 and 30 <= pr <= 250:
             if o2 < 61:          # OSCAR's Viatom import ignores values below 61 %
                 o2 = 0xFF
             else:
                 good_o2.append(o2)
             good_hr.append(pr)
-            recs += bytes([o2, pr, 0, 0, 0])
+            recs += bytes([o2, pr, 0, mv, 0])
         else:                    # no SpO2, or no pulse nearby: gap in the trace
-            recs += bytes([0xFF, 0xFF, 0xFF, 0, 0])
+            recs += bytes([0xFF, 0xFF, 0xFF, mv, 0])
     lt = to_local(start, tz)
     size = VIATOM_HEADER + len(recs)
     hdr = bytearray(VIATOM_HEADER)
@@ -261,7 +272,7 @@ def write_viatom(path, seg, hr_times, hr, tz, max_hold):
 
 def convert(readings, hr, tz, outdir=".", min_confidence=0, min_minutes=30,
             max_hold=120, split_gap=10, csv=True, window=None, log=print,
-            fmt="viatom"):
+            fmt="viatom", movement=None):
     """Converts readings into OSCAR oximetry files (plus a .csv if csv=True).
 
     readings: list of (fit_timestamp_utc, spo2, confidence)
@@ -269,6 +280,8 @@ def convert(readings, hr, tz, outdir=".", min_confidence=0, min_minutes=30,
     tz:       time zone (see to_local); None = the computer's
     window:   (start, end) as FIT UTC timestamps; only segments starting
               inside this window are written.
+    movement: optional {fit_minute_start_utc: level} (Garmin sleep movement),
+              written to Viatom files and to the .csv
     fmt:      "viatom" -> one file per night in <outdir>/oscar_viatom/, imported
                           all at once via "Import Viatom/Wellue data"
               "md300"  -> one .dat per night, imported via the Oximetry Wizard
@@ -292,17 +305,21 @@ def convert(readings, hr, tz, outdir=".", min_confidence=0, min_minutes=30,
         else:
             os.makedirs(vdir, exist_ok=True)
             out = os.path.join(vdir, "Garmin_" + lt0.strftime("%Y%m%d%H%M%S"))
-            write_viatom(out, seg, hr_times, hr, tz, max_hold)
+            write_viatom(out, seg, hr_times, hr, tz, max_hold, movement)
         vals = [r[1] for r in seg]
         lt1 = to_local(seg[-1][0], tz)
         log(f"-> {out}: {lt0:%Y-%m-%d %H:%M} to {lt1:%Y-%m-%d %H:%M} (local time), "
             f"{len(seg)} readings, SpO2 avg {sum(vals)/len(vals):.1f}% min {min(vals)}%")
         if csv:
             with open(base + ".csv", "w") as f:
-                f.write("Time,SpO2,Pulse,Confidence\n")
+                f.write("Time,SpO2,Pulse,Confidence" + (",Movement" if movement else "") + "\n")
                 for t, v, c in seg:
                     lt = to_local(t, tz)
-                    f.write(f"{lt:%Y-%m-%d %H:%M:%S},{v},{nearest_hr(hr_times, hr, t)},{c}\n")
+                    line = f"{lt:%Y-%m-%d %H:%M:%S},{v},{nearest_hr(hr_times, hr, t)},{c}"
+                    if movement:
+                        mv = movement.get(t - t % 60)
+                        line += "," + ("" if mv is None else f"{mv:.2f}")
+                    f.write(line + "\n")
         created.append(out)
     return created
 

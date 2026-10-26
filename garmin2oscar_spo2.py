@@ -22,7 +22,9 @@ How it works:
   2. Downloads the "original" .fit files for the evening's day and the next
      day (a night spans two daily files). They are kept in
      ./garmin_fit/YYYY-MM-DD/ and are not downloaded again later.
-  3. Converts them for OSCAR (1 reading per minute, same as the manual export).
+  3. Downloads Garmin's per-minute sleep movement (not in the .fit files);
+     with the default Viatom format it appears as OSCAR's Movement graph.
+  4. Converts them for OSCAR (1 reading per minute, same as the manual export).
   If the .fit download fails, the script falls back to the Garmin Connect
   SpO2 JSON API (sometimes at a lower resolution).
 
@@ -34,6 +36,7 @@ import argparse
 import datetime as dt
 import getpass
 import io
+import json
 import os
 import sys
 import zipfile
@@ -147,6 +150,35 @@ def fetch_json_day(api, day, log=print):
     return readings, hr
 
 
+def fetch_movement(api, wake_day, fit_dir, offline=False, log=print):
+    """Garmin's per-minute sleep movement for the night ending on wake_day.
+
+    Returns {fit_minute_start_utc: activity level}. The JSON is cached as
+    <fit_dir>/<wake_day>/sleep.json, so it is downloaded only once.
+    """
+    path = os.path.join(fit_dir, wake_day.isoformat(), "sleep.json")
+    data = None
+    recent = wake_day >= dt.date.today() - dt.timedelta(days=1)
+    if os.path.exists(path) and (offline or not recent):
+        with open(path) as f:
+            data = json.load(f)
+    elif api is not None and not offline:
+        try:
+            data = api.get_sleep_data(wake_day.isoformat()) or {}
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            log(f"Sleep movement unavailable for {wake_day:%Y-%m-%d} ({e}).")
+    movement = {}
+    for item in (data or {}).get("sleepMovement") or []:
+        ts = to_fit_ts(item.get("startGMT"))
+        level = item.get("activityLevel")
+        if ts is not None and isinstance(level, (int, float)):
+            movement[ts - ts % 60] = float(level)
+    return movement
+
+
 def local_to_fit(day, hour=12, minute=0, tz=None):
     """A local wall-clock time on the given day, as FIT UTC seconds."""
     t = dt.datetime(day.year, day.month, day.day, hour, minute)
@@ -217,9 +249,13 @@ def process_night(api, night, a):
               "readings taken before midnight were dropped, otherwise OSCAR "
               "would show this night's time axis 1 hour off.")
 
+    movement = {} if a.no_movement else fetch_movement(api, days[1], a.fit_dir, a.offline)
+    if movement:
+        print(f"Sleep movement: {len(movement)} minutes.")
+
     created = f2o.convert(readings, hr, tz, a.outdir, a.min_confidence, a.min_minutes,
                           a.max_hold, a.split_gap, not a.no_csv, window=window,
-                          fmt=a.format)
+                          fmt=a.format, movement=movement)
     if not created:
         print("No overnight recording long enough (see --min-minutes).")
     return created
@@ -249,6 +285,8 @@ def main():
                     help="ignore readings before this local time (e.g. 00:00)")
     ap.add_argument("--format", choices=["viatom", "md300"], default="viatom",
                     help="viatom (default): all nights in one import; md300: Oximetry Wizard .dat")
+    ap.add_argument("--no-movement", action="store_true",
+                    help="don't download Garmin's sleep movement")
     ap.add_argument("--keep-dst-evening", action="store_true",
                     help="keep readings before midnight on DST-change nights")
     a = ap.parse_args()

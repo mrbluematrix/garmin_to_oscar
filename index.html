@@ -213,9 +213,9 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
   <p class="lede">Turn the overnight SpO2 and pulse recorded by your Garmin watch into files OSCAR can import, so you can see them next to your CPAP data.</p>
 
   <label class="drop" id="drop">
-    <input type="file" id="fileInput" multiple accept=".zip,.fit,.FIT,application/zip">
+    <input type="file" id="fileInput" multiple accept=".zip,.fit,.FIT,.json,application/zip,application/json">
     <strong>Drop your Garmin export here</strong>
-    <span>The .zip from Garmin Connect’s “Export your data”, a daily .zip, or individual .fit files.</span>
+    <span>The .zip from Garmin Connect’s “Export your data”, a daily .zip, or individual .fit files. Add sleep .json files too to include sleep movement.</span>
     <div><span class="button" aria-hidden="true">Choose files</span></div>
     <svg class="trace" viewBox="0 0 600 72" preserveAspectRatio="none" aria-hidden="true">
       <line x1="0" y1="44" x2="600" y2="44"></line>
@@ -273,6 +273,7 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
 
   <footer>
     <p class="fine">Everything runs in your browser: your files are never uploaded anywhere. Times use this computer’s time zone (<span id="tzName"></span>).</p>
+    <p class="fine">Sleep movement isn’t stored in .fit files. It’s added when you also drop Garmin sleep .json files that contain it, such as the sleep.json files saved by the garmin2oscar Python script; it then appears as OSCAR’s Movement graph (Viatom format only, value = Garmin activity level × 10).</p>
     <p class="fine">On a night that starts on a daylight-saving-change day, readings before midnight are left out, otherwise OSCAR labels that night’s time axis one hour off.</p>
     <p class="fine">A wrist sensor is not a medical oximeter: one reading per minute, and flat plateaus often mean poor contact. Talk to your doctor about your results.</p>
   </footer>
@@ -393,6 +394,8 @@ async function collectFitFiles(blob, label, out, depth) {
     const base = e.name.split("/").pop();
     if (lower.endsWith(".fit")) {
       out.push({ name: base, read: () => entryBuffer(blob, e) });
+    } else if (lower.endsWith(".json") && /sleep/i.test(e.name)) {
+      out.push({ name: base, json: true, read: () => entryBuffer(blob, e) });
     } else if (lower.endsWith(".zip") && depth < 3) {
       const inner = await entryBlob(blob, e);
       await collectFitFiles(inner, base, out, depth + 1);
@@ -502,6 +505,31 @@ function extractFit(buf, spo2, hr) {
   return found;
 }
 
+/* ---------- sleep movement (Garmin Connect sleep JSON, not in .fit files) ---------- */
+function gmtToFit(v) {
+  let ms = null;
+  if (typeof v === "number") ms = v;
+  else if (typeof v === "string") ms = Date.parse(v.replace(/\.\d+$/, "").replace(/Z$/, "") + "Z");
+  return ms == null || Number.isNaN(ms) ? null : Math.floor(ms / 1000) - FIT_TO_UNIX;
+}
+/** Finds every "sleepMovement" list in a JSON document (any nesting). */
+function extractMovement(obj, movement, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 5) return;
+  if (Array.isArray(obj)) { obj.forEach((o) => extractMovement(o, movement, depth + 1)); return; }
+  if (Array.isArray(obj.sleepMovement)) {
+    for (const it of obj.sleepMovement) {
+      const t = gmtToFit(it && it.startGMT);
+      if (t !== null && typeof it.activityLevel === "number") movement.set(t - (t % 60), it.activityLevel);
+    }
+  }
+  for (const k in obj) if (k !== "sleepMovement" && obj[k] && typeof obj[k] === "object") extractMovement(obj[k], movement, depth + 1);
+}
+function motionByte(movement, t) {
+  if (!movement || !movement.size) return 0;
+  const lvl = movement.get(t - (t % 60));
+  return lvl === undefined ? 0 : Math.max(0, Math.min(255, Math.round(lvl * 10)));
+}
+
 /* ---------- nights ---------- */
 function dayLengthHours(y, m, d) {
   return (new Date(y, m, d + 1) - new Date(y, m, d)) / 3600000;
@@ -540,7 +568,9 @@ function buildNights(spo2, hr) {
     }
     if (!rs.length || rs[rs.length - 1][0] - rs[0][0] < MIN_SPAN) continue;
     const vals = rs.map((r) => r[1]);
+    const moved = state.movement ? rs.filter((r) => state.movement.has(r[0] - (r[0] % 60))).length : 0;
     nights.push({
+      hasMovement: moved > rs.length / 2,
       key: s.key, ev: s.ev, readings: rs, dstTrimmed,
       start: fitToDate(rs[0][0]), end: fitToDate(rs[rs.length - 1][0]),
       avg: vals.reduce((a, b) => a + b, 0) / vals.length,
@@ -587,6 +617,7 @@ function writeViatom(night, hrTimes, hr) {
     let o2 = arr[k * VIATOM_STEP];
     const pr = o2 ? nearestHr(hrTimes, hr, t, 300) : 0;
     const p = 40 + k * 5;
+    out[p + 3] = motionByte(state.movement, t);
     if (o2 && pr >= 30 && pr <= 250) {
       if (o2 < 61) o2 = 0xFF; else o2s.push(o2);
       prs.push(pr);
@@ -632,9 +663,12 @@ function writeMd300(night, hrTimes, hr) {
 }
 
 function writeCsv(night, hrTimes, hr) {
-  const lines = ["Time,SpO2,Pulse,Confidence"];
+  const mov = state.movement && state.movement.size ? state.movement : null;
+  const lines = ["Time,SpO2,Pulse,Confidence" + (mov ? ",Movement" : "")];
   for (const [t, v, c] of night.readings) {
-    lines.push(`${isoLocal(fitToDate(t))},${v},${nearestHr(hrTimes, hr, t, 90)},${c}`);
+    let line = `${isoLocal(fitToDate(t))},${v},${nearestHr(hrTimes, hr, t, 90)},${c}`;
+    if (mov) { const m = mov.get(t - (t % 60)); line += "," + (m === undefined ? "" : m.toFixed(2)); }
+    lines.push(line);
   }
   return { name: `csv/garmin_spo2_${stamp14(night.start)}.csv`, data: new TextEncoder().encode(lines.join("\n") + "\n") };
 }
@@ -741,7 +775,8 @@ function renderNights() {
     when.textContent = `${hhmm(n.start)} to ${hhmm(n.end)}`;
     const stats = document.createElement("div");
     stats.className = "stats";
-    stats.innerHTML = `avg <b>${n.avg.toFixed(1)}%</b>, min <b>${n.min}%</b>, <b>${n.below90}</b> min under 90%`;
+    stats.innerHTML = `avg <b>${n.avg.toFixed(1)}%</b>, min <b>${n.min}%</b>, <b>${n.below90}</b> min under 90%`
+      + (n.hasMovement ? ", with movement" : "");
     left.append(h3, when, stats);
     const right = document.createElement("div");
     right.appendChild(sparkline(n));
@@ -786,6 +821,8 @@ function renderSummary(fileCount) {
   add(`${dayFmt.format(new Date(...first.ev))}`, "first night");
   add(`${dayFmt.format(new Date(...last.ev))}`, "latest night");
   add(String(fileCount), "files read");
+  const withMov = n.filter((x) => x.hasMovement).length;
+  if (withMov) add(String(withMov), withMov === 1 ? "night with movement" : "nights with movement");
 }
 
 async function handleFiles(fileList) {
@@ -799,8 +836,14 @@ async function handleFiles(fileList) {
     for (const f of files) {
       const lower = f.name.toLowerCase();
       if (lower.endsWith(".fit")) fits.push({ name: f.name, read: () => f.arrayBuffer() });
+      else if (lower.endsWith(".json")) fits.push({ name: f.name, json: true, read: () => f.arrayBuffer() });
       else if (lower.endsWith(".zip")) await collectFitFiles(f, f.name, fits, 0);
     }
+    state.movement = new Map();
+    for (const j of fits.filter((x) => x.json)) {
+      try { extractMovement(JSON.parse(new TextDecoder().decode(await j.read())), state.movement); } catch (err) { /* not JSON */ }
+    }
+    fits.splice(0, fits.length, ...fits.filter((x) => !x.json));
     if (!fits.length) {
       setProgress(); setStatus("No .fit files found. Drop the .zip from Garmin Connect or .fit files.", true);
       return;
