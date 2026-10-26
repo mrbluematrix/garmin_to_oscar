@@ -12,7 +12,9 @@ done.
 # garmin2oscar
 <img width="2034" height="1048" alt="graph_pules_motion" src="https://github.com/user-attachments/assets/9abb0149-c313-4842-aa85-c65eb46b2148" />
 
-Import the overnight **SpO2 ,pulse, motions** recorded by a Garmin watch into
+# garmin2oscar
+
+Import the overnight **SpO2 and pulse** recorded by a Garmin watch into
 [OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
 
 OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
@@ -24,10 +26,15 @@ OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
 - Writes **one file per night**, imported all at once with OSCAR's
   **Import Viatom/Wellue data** (already-imported nights are skipped).
 - Also writes a readable `.csv` per night (`Time,SpO2,Pulse,Confidence`).
+- Converts the **sleep stages** (deep, light, REM, awake) into one file for OSCAR's
+  **Import Dreem data**, so OSCAR shows a sleep-stage graph next to your CPAP data.
 - Handles daylight saving time. On a night that starts on a DST-change day,
   readings before midnight are dropped automatically, otherwise OSCAR labels
   that night's time axis 1 hour off (a display quirk in OSCAR).
 - Optional automatic download from Garmin Connect, so no manual export is needed.
+- With the automatic download, Garmin's per-minute **sleep movement** is added too
+  (shown as OSCAR's Movement graph, value = Garmin activity level × 10). It isn't in
+  the `.fit` files, so it's not available when converting an export.
 
 ## The two scripts
 
@@ -73,6 +80,8 @@ python3 fit2oscar_spo2.py *_WELLNESS.fit
 1. Choose **Import Viatom/Wellue data**.
 2. Open the `oscar_viatom` folder created by the script.
 3. Select all files (Cmd+A / Ctrl+A) and confirm.
+4. For sleep stages, choose **Import Dreem data** and pick
+   `oscar_dreem/garmin_sleep_stages.csv`. Nights already imported are skipped.
 
 Prefer the Oximetry Wizard? Add `--format md300` to get ChoiceMMed `.dat` files.
 Import them one night at a time with *Import from a data file* and choose
@@ -85,10 +94,12 @@ restart OSCAR before the next one.
 |---|---|
 | `--format viatom\|md300` | Output format (default `viatom`) |
 | `--no-csv` | Don't write the `.csv` files |
+| `--no-stages` | Don't write the sleep-stage file |
 | `--timezone Europe/Paris` | Time zone (default: the computer's) |
 | `--min-minutes 30` | Ignore recordings shorter than this (daytime spot checks) |
 | `--min-confidence N` | Drop readings below Garmin's confidence value N (see caveats) |
 | `--offline` | `garmin2oscar` only: use cached `.fit` files, no login |
+| `--no-movement` | `garmin2oscar` only: don't download the sleep movement |
 | `--keep-dst-evening` | `garmin2oscar` only: don't drop pre-midnight readings on DST nights |
 
 ## Caveats
@@ -102,6 +113,8 @@ restart OSCAR before the next one.
 - **Unofficial API.** `garmin2oscar_spo2.py` uses the unofficial `python-garminconnect`
   library, which uses Garmin Connect's private API. That's against Garmin's terms of
   use and can break at any time. `fit2oscar_spo2.py` with exported files is unaffected.
+- **Sleep stages** are the watch's estimates (from heart rate and movement), not an EEG
+  measurement like in a sleep lab.
 - **Duplicates.** A night imported through both the wizard and the Viatom import
   appears twice in OSCAR. Purge one first.
 - **Tested hardware.** Tested with a Garmin Venu 4 only. Feedback for other models is welcome.
@@ -115,3 +128,4 @@ The included `.gitignore` already excludes them.
 
 Not affiliated with Garmin or the OSCAR team. Not a medical device. For
 information only; talk to your doctor about your results.
+
