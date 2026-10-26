@@ -1,3 +1,6 @@
+UPDATE:
+for non geek: online version (you have to download manualy your garmin fit.): https://mrbluematrix.github.io/garmin_to_oscar/
+
 # garmin2oscar
 
 Import the overnight **SpO2 and pulse** recorded by a Garmin watch into
