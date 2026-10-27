@@ -44,8 +44,7 @@ Options:
     --no-journal         do not write oscar_journal/garmin_journal.xml (written
                          by default) for OSCAR's File > Import Journal: a note
                          per night (Garmin scores, HRV, stages, SpO2,
-                         breathing...) and bookmarks on breathing disruptions
-                         and on the lowest SpO2
+                         breathing, day before...)
     --overwrite          start the cumulative files from scratch (see below)
 
 The files gathering several nights (garmin_nights_summary.csv, the sleep
@@ -442,8 +441,19 @@ def sleep_from_json(data, to_fit_ts):
         q = (sc.get(key) or {}).get("qualifierKey")
         if q:
             scores["restlessness" if key == "restlessness" else "interruptions"] = q.title()
+    q = (sc.get("restlessness") or {}).get("qualifierKey")
+    if q:
+        scores["restlessness_rating"] = q.title()          # Garmin's own judgment
+    ranges = {}                                        # Garmin's personal optimal ranges
+    for key, name, div in (("deepPercentage", "deep", 1), ("remPercentage", "rem", 1),
+                           ("lightPercentage", "light", 1), ("totalDuration", "total", 60),
+                           ("awakeCount", "awakenings", 1), ("stress", "stress", 1)):
+        r = sc.get(key) or {}
+        lo, hi = r.get("optimalStart"), r.get("optimalEnd")
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            ranges[name] = (lo / div, hi / div)
     return [{"start": intervals[0][0], "stop": intervals[-1][1], "intervals": intervals,
-             "awakenings": dto.get("awakeCount"), "scores": scores}]
+             "awakenings": dto.get("awakeCount"), "scores": scores, "ranges": ranges}]
 
 
 def restless_from_json(data, to_fit_ts):
@@ -1084,6 +1094,8 @@ def night_infos(readings, stages, breathing, restless, extras, resp, tz, days=No
         for k, v in (sess.get("scores") or {}).items():
             if not isinstance(info["scores"].get(k), (int, float)):
                 info["scores"][k] = v
+        for k, v in (sess.get("ranges") or {}).items():
+            info.setdefault("ranges", {}).setdefault(k, v)
     for n, sess in _dedupe_by_night(breathing, tz).items():
         info = get(n)
         info["breathing"] = sess
@@ -1117,92 +1129,203 @@ def night_infos(readings, stages, breathing, restless, extras, resp, tz, days=No
     return nights
 
 
+GOOD_COLOR, BAD_COLOR = "#2e7d32", "#c62828"
+# Reference ranges when Garmin's own (personal) optimal ranges are not available
+DEFAULT_RANGES = {"deep": (16, 33), "rem": (21, 31), "light": (30, 64), "total": (420, 540),
+                  "awakenings": (0, 1), "stress": (0, 25)}
+GOOD_WORDS, BAD_WORDS = {"excellent", "good"}, {"poor"}
+
+
+def _esc(x):
+    return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _c(text, good):
+    """Green if good is True, red if False, plain if None."""
+    if good is None:
+        return _esc(text)
+    return f'<span style="color:{GOOD_COLOR if good else BAD_COLOR}">{_esc(text)}</span>'
+
+
+def _judge(v, good_if, bad_if):
+    """True / False / None from two predicates."""
+    if v is None:
+        return None
+    if good_if(v):
+        return True
+    if bad_if(v):
+        return False
+    return None
+
+
+def _score_txt(v):
+    """Garmin scores are out of 100 (numbers from .fit); Garmin Connect gives a word."""
+    return f"{v:.0f}/100" if isinstance(v, (int, float)) else str(v)
+
+
+def _score_label(name, v):
+    return f"{name} score " if isinstance(v, (int, float)) else f"{name} "
+
+
+def _score_judge(v):
+    if isinstance(v, (int, float)):
+        return _judge(v, lambda x: x >= 80, lambda x: x < 60)
+    w = str(v).lower()
+    return True if w in GOOD_WORDS else False if w in BAD_WORDS else None
+
+
 def journal_note(info, tz):
-    """The note shown in OSCAR (HTML lines)."""
-    sc, ex, lines = info["scores"], info["extras"], []
-    first = []
+    """The note shown in OSCAR: one line per topic, title in bold, values in
+    green when good and red when bad (Garmin's personal optimal ranges when
+    known, otherwise usual reference values)."""
+    sc, ex = info["scores"], info["extras"]
+    rng = dict(DEFAULT_RANGES, **(info.get("ranges") or {}))
+    lines = []
+
+    def line(title, items):
+        items = [i for i in items if i]
+        if items:
+            lines.append(f"<b>{_esc(title)}:</b> " + " · ".join(items))
+
+    # Sleep
+    items = []
     if "start" in info:
-        first.append(f"{to_local(info['start'], tz):%H:%M}-{to_local(info['stop'], tz):%H:%M}")
+        items.append(_esc(f"{to_local(info['start'], tz):%H:%M}-{to_local(info['stop'], tz):%H:%M}"))
+    m = info.get("stages")
+    asleep = (m["Deep"] + m["Light"] + m["REM"]) if m else 0
+    if m and asleep:
+        lo, hi = rng["total"]
+        if lo == hi:            # Garmin gives your sleep need: reaching it is good
+            good = asleep >= lo
+        else:
+            good = True if lo <= asleep <= hi else False if asleep < lo else None
+        items.append("total " + _c(_dur(asleep), good))
     if "overall" in sc:
-        first.append(f"score {sc['overall']}" + (f" (quality {sc['quality']})" if "quality" in sc else ""))
-    if "hrv" in ex:
-        hrv = f"HRV {ex['hrv']:.0f} ms"
-        details = [x for x in (ex.get("hrv_status"),
-                               f"weekly {ex['hrv_weekly']:.0f}" if "hrv_weekly" in ex else None) if x]
-        first.append(hrv + (f" ({', '.join(details)})" if details else ""))
-    if "rhr" in ex:
-        first.append(f"resting HR {ex['rhr']:.0f}")
-    if "skin_temp" in ex:
-        first.append(f"skin temp {ex['skin_temp']:+.1f} °C")
-    if first:
-        lines.append("Sleep: " + ", ".join(first))
-    if "stages" in info:
-        m = info["stages"]
-        parts = [f"deep {_dur(m['Deep'])}", f"light {_dur(m['Light'])}", f"REM {_dur(m['REM'])}",
-                 f"awake {_dur(m['WAKE'])}"]
+        items.append("score " + _c(_score_txt(sc["overall"]), _score_judge(sc["overall"])))
+    if "quality" in sc:
+        items.append("quality " + _c(_score_txt(sc["quality"]), _score_judge(sc["quality"])))
+    line("Sleep", items)
+
+    # Stages
+    if m:
+        def stage(name, key, label):
+            mins = m[name]
+            pct = 100 * mins / asleep if asleep else 0
+            lo, hi = rng[key]
+            if key == "light":
+                good = True if lo <= pct <= hi else None
+            else:
+                good = pct >= lo
+            return label + " " + _c(f"{_dur(mins)} ({pct:.0f} %)", good)
+        items = [stage("Deep", "deep", "deep"), stage("Light", "light", "light"), stage("REM", "rem", "REM"),
+                 "awake " + _c(_dur(m["WAKE"]), _judge(m["WAKE"], lambda x: x <= 30, lambda x: x > 60))]
         if info.get("awakenings") is not None:
-            parts.append(f"{info['awakenings']} awakenings")
-        lines.append("Stages: " + ", ".join(parts))
-    rest = []
-    if "restless" in info:
-        rest.append(f"{info['restless']} restless moments")
-    if "restlessness" in sc:
-        rest.append(f"restlessness {_num(sc['restlessness'])}")
-    if "interruptions" in sc:
-        rest.append(f"interruptions {_num(sc['interruptions'])}")
-    if rest:
-        lines.append("Restlessness: " + ", ".join(rest))
+            hi = rng["awakenings"][1]
+            items.append(_c(f"{info['awakenings']} awakenings",
+                            _judge(info["awakenings"], lambda x: x <= hi, lambda x: x >= hi + 3)))
+        line("Stages", items)
+
+    # SpO2
     if "spo2" in info:
         o = info["spo2"]
-        lines.append(f"SpO2: avg {o['avg']:.1f} %, min {o['min']} % at {to_local(o['min_t'], tz):%H:%M}, "
-                     f"{o['below90']} min under 90 %")
-    vit = []
+        line("SpO2", [
+            "avg " + _c(f"{o['avg']:.1f} %", _judge(o["avg"], lambda x: x >= 95, lambda x: x < 93)),
+            "min " + _c(f"{o['min']} %", _judge(o["min"], lambda x: x >= 90, lambda x: x < 88))
+            + _esc(f" at {to_local(o['min_t'], tz):%H:%M}"),
+            _c(f"{o['below90']} min under 90 %", _judge(o["below90"], lambda x: x == 0, lambda x: x > 10)),
+        ])
+
+    # Breathing
+    items = []
     if "resp" in ex:
-        vit.append(f"breathing {ex['resp']:.1f}/min")
-    if "avg_hr" in ex:
-        vit.append(f"avg HR {ex['avg_hr']:.0f}")
-    if "stress" in ex or "stress" in sc:
-        vit.append(f"sleep stress {_num(ex.get('stress', sc.get('stress')))}")
-    if "body_battery" in ex:
-        vit.append(f"Body Battery {ex['body_battery']:+.0f}")
-    if vit:
-        lines.append("Vitals: " + ", ".join(vit))
-    if info.get("day_before"):
-        txt = day_before_text(info["day_before"])
-        if txt:
-            lines.append("Day before: " + txt)
+        items.append("rate " + _c(f"{ex['resp']:.1f}/min",
+                                  _judge(ex["resp"], lambda x: 12 <= x <= 20, lambda x: x < 10 or x > 22)))
     if "breathing" in info:
         b = info["breathing"]
         mins = {"low": 0, "medium": 0, "high": 0}
         for t0, t1, sev in b["periods"]:
             if sev in mins:
                 mins[sev] += (t1 - t0) / 60
-        parts = [f"{k} {_dur(v)}" for k, v in mins.items() if v >= 1] or ["none"]
-        lines.append("Breathing disruptions: " + ", ".join(parts)
-                     + (f" (overall {b['overall']})" if b.get("overall") else ""))
+        parts = [_c(f"{k} {_dur(v)}", None if k == "low" else False) for k, v in mins.items() if v >= 1]
+        items.append("disruptions " + (", ".join(parts) if parts else _c("none", True)))
+        if b.get("overall"):
+            items.append("overall " + _c(b["overall"], True if b["overall"] == "none"
+                                         else False if b["overall"] in ("medium", "high") else None))
+    line("Breathing", items)
+
+    # Heart and recovery
+    items = []
+    if "hrv" in ex:
+        st = ex.get("hrv_status")
+        good = True if st == "balanced" else False if st in ("low", "poor") else None
+        details = [x for x in (st, f"weekly {ex['hrv_weekly']:.0f}" if "hrv_weekly" in ex else None) if x]
+        items.append("HRV " + _c(f"{ex['hrv']:.0f} ms" + (f" ({', '.join(details)})" if details else ""), good))
+    if "rhr" in ex:
+        items.append(_esc(f"resting HR {ex['rhr']:.0f}"))
+    if "avg_hr" in ex:
+        items.append(_esc(f"avg HR {ex['avg_hr']:.0f}"))
+    if "skin_temp" in ex:
+        items.append("skin temp " + _c(f"{ex['skin_temp']:+.1f} °C",
+                                       _judge(abs(ex["skin_temp"]), lambda x: x <= 0.5, lambda x: x >= 1.0)))
+    stress = ex.get("stress", sc.get("stress"))
+    if stress is not None:
+        hi = rng["stress"][1]
+        items.append("sleep stress " + _c(_num(stress), _judge(stress, lambda x: x <= hi, lambda x: x > 50)))
+    if "body_battery" in ex:
+        items.append("Body Battery " + _c(f"{ex['body_battery']:+.0f}",
+                                          _judge(ex["body_battery"], lambda x: x >= 50, lambda x: x < 20)))
+    line("Heart and recovery", items)
+
+    # Restlessness
+    items = []
+    rating = _score_judge(sc["restlessness_rating"]) if "restlessness_rating" in sc else None
+    if "restless" in info:
+        items.append(_c(f"{info['restless']} restless moments", rating))
+    if "restlessness" in sc:
+        items.append(_score_label("restlessness", sc["restlessness"]) + _c(_score_txt(sc["restlessness"]),
+                                                rating if rating is not None else _score_judge(sc["restlessness"])))
+    if "interruptions" in sc:
+        items.append(_score_label("interruptions", sc["interruptions"])
+                     + _c(_score_txt(sc["interruptions"]), _score_judge(sc["interruptions"])))
+    line("Restlessness", items)
+
+    # Day before
+    d = info.get("day_before")
+    if d:
+        items = []
+        if "steps" in d:
+            items.append(_c(f"{d['steps']:,} steps", _judge(d["steps"], lambda x: x >= 7500, lambda x: x < 3000)))
+        if d.get("distance_km"):
+            items.append(_esc(f"{d['distance_km']:.1f} km"))
+        if d.get("active_min"):
+            items.append(_esc(f"{_dur(d['active_min'])} active"))
+        if d.get("active_kcal"):
+            items.append(_esc(f"{d['active_kcal']:.0f} active kcal"))
+        if "moderate_min" in d:
+            total = d["moderate_min"] + 2 * d["vigorous_min"]
+            items.append(_c(f"{total:.0f} intensity min ({d['moderate_min']:.0f} moderate, "
+                            f"{d['vigorous_min']:.0f} vigorous)",
+                            _judge(total, lambda x: x >= 22, lambda x: x == 0)))
+        if d.get("floors"):
+            items.append(_esc(f"{d['floors']:.0f} floors"))
+        if "stress" in d:
+            items.append("stress " + _c(f"{d['stress']:.0f}", _judge(d["stress"], lambda x: x <= 25, lambda x: x > 50)))
+        if "bb_charged" in d or "bb_drained" in d:
+            items.append(_esc(f"Body Battery +{d.get('bb_charged', 0):.0f}/-{d.get('bb_drained', 0):.0f}"))
+        if d.get("activities"):
+            items.append(_esc("activities: " + "; ".join(
+                f"{n} {_dur(mm)}" + (f" {k:.1f} km" if k >= 0.05 else "") for n, mm, k in d["activities"])))
+        line("Day before", items)
+
     if not lines:
         return None
-    esc = lambda x: x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return "<p><b>Garmin</b><br/>" + "<br/>".join(esc(l) for l in lines) + "</p>"
-
-
-def journal_bookmarks(info, tz):
-    """Bookmarks: every breathing-disruption period and the lowest SpO2."""
-    ms = lambda t: (t + 631065600) * 1000
-    out = []
-    for t0, t1, sev in (info.get("breathing") or {}).get("periods", []):
-        if sev in ("low", "medium", "high"):
-            out.append((ms(t0), ms(t1), f"Garmin breathing disruptions: {sev}"))
-    if "spo2" in info:
-        t = info["spo2"]["min_t"]
-        out.append((ms(t - 300), ms(t + 300), f"Garmin lowest SpO2: {info['spo2']['min']} %"))
-    return sorted(out)
+    return "<p><b>Garmin</b><br/>" + "<br/>".join(lines) + "</p>"
 
 
 def write_journal_xml(path, readings, stages, breathing, restless, extras, resp, tz,
                       overwrite=False, log=print, days=None):
     """OSCAR Journal backup file (OSCAR: restore/import Journal): one note and
-    bookmarks per night. Cumulative like the other files. OSCAR skips a note
+    per night. Cumulative like the other files. OSCAR skips a note
     it already has, and puts a different one above the existing text."""
     import xml.etree.ElementTree as ET
     infos = night_infos(readings, stages, breathing, restless, extras, resp, tz)
@@ -1213,16 +1336,11 @@ def write_journal_xml(path, readings, stages, breathing, restless, extras, resp,
     for n, info in infos.items():
         if "stages" not in info and "breathing" not in info:
             continue        # night not finished yet (only the evening's SpO2): its note would change
-        note, bms = journal_note(info, tz), journal_bookmarks(info, tz)
-        if not note and not bms:
+        note = journal_note(info, tz)
+        if not note:
             continue
         day = ET.Element("day", {"date": str(n), "lastupdated": ""})
-        if note:
-            ET.SubElement(ET.SubElement(day, "note"), "text").text = note
-        if bms:
-            el = ET.SubElement(day, "bookmarks")
-            for a, b, txt in bms:
-                ET.SubElement(el, "bookmark", {"notes": txt, "start": str(a), "end": str(b)})
+        ET.SubElement(ET.SubElement(day, "note"), "text").text = note
         new_days[str(n)] = day
     if not new_days:
         return None
@@ -1285,7 +1403,7 @@ def main():
     ap.add_argument("--no-summary", action="store_true",
                     help="don't write garmin_nights_summary.csv")
     ap.add_argument("--no-journal", dest="journal", action="store_false",
-                    help="don't write the OSCAR Journal file (notes and bookmarks per night)")
+                    help="don't write the OSCAR Journal file (a note per night)")
     ap.add_argument("--journal", dest="journal", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--overwrite", action="store_true",
                     help="start the cumulative files (summary, stages, breathing, Somnopose) "

@@ -38,7 +38,7 @@ How it works:
   (--overwrite starts them from scratch). OSCAR skips nights it already has.
   Also oscar_journal/garmin_journal.xml for OSCAR's File > Import Journal
   (--no-journal to skip it): a note per night (scores, HRV, resting HR, stages, SpO2, breathing,
-  Body Battery...) and bookmarks on breathing disruptions and the lowest SpO2.
+  Body Battery, day before...).
   The note and the summary also give the activity of the day before each
   night (steps, distance, active time, intensity minutes, activities...),
   from Garmin Connect's daily summary or the WELLNESS .fit totals.
@@ -416,7 +416,7 @@ def main():
     ap.add_argument("--no-summary", action="store_true",
                     help="don't write garmin_nights_summary.csv")
     ap.add_argument("--no-journal", dest="journal", action="store_false",
-                    help="don't write the OSCAR Journal file (notes and bookmarks per night)")
+                    help="don't write the OSCAR Journal file (a note per night)")
     ap.add_argument("--journal", dest="journal", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--no-day-before", action="store_true",
                     help="don't fetch the activity of the day before each night")

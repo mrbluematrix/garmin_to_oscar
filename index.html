@@ -249,7 +249,7 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
         <label><input type="checkbox" id="withSummary" checked> <span>Include a summary of every night <small>One row per night: Garmin’s sleep, restlessness and interruptions scores, awakenings, restless moments, stage minutes, SpO2 and breathing disruptions.</small></span></label>
       </div>
       <div class="inline">
-        <label><input type="checkbox" id="withJournal" checked> <span>Include an OSCAR Journal file <small>A note per night (scores, HRV, stages, SpO2, breathing…) and bookmarks on breathing disruptions and the lowest SpO2, for OSCAR’s Journal import.</small></span></label>
+        <label><input type="checkbox" id="withJournal" checked> <span>Include an OSCAR Journal file <small>A note per night (scores, HRV, stages, SpO2, breathing, day before…), for OSCAR’s Journal import.</small></span></label>
       </div>
       <div class="inline" id="stagesOption">
         <label><input type="checkbox" id="withStages" checked> <span>Include sleep stages <small>Deep, light, REM and awake, as one file for “Import Dreem data”.</small></span></label>
@@ -607,6 +607,15 @@ function extractSleepFit(buf) {
   return intervals.length ? [{ start, stop, intervals, awakenings, scores }] : [];
 }
 
+/** Garmin's personal optimal ranges from sleepScores (percent, minutes, count). */
+function jsonRanges(sc) {
+  const out = {};
+  for (const [key, name, div] of [["deepPercentage", "deep", 1], ["remPercentage", "rem", 1], ["lightPercentage", "light", 1], ["totalDuration", "total", 60], ["awakeCount", "awakenings", 1], ["stress", "stress", 1]]) {
+    const r = sc[key] || {};
+    if (typeof r.optimalStart === "number" && typeof r.optimalEnd === "number") out[name] = [r.optimalStart / div, r.optimalEnd / div];
+  }
+  return out;
+}
 /** Garmin Connect sleep JSON: every object with a "sleepLevels" list. */
 function extractSleepJson(obj, out, depth = 0) {
   if (!obj || typeof obj !== "object" || depth > 5) return;
@@ -624,9 +633,10 @@ function extractSleepJson(obj, out, depth = 0) {
       const sc = dto.sleepScores || {}, scores = {};
       if (sc.overall && typeof sc.overall.value === "number") scores.overall = sc.overall.value;
       if (sc.restlessness && sc.restlessness.qualifierKey) scores.restlessness = titleCase(sc.restlessness.qualifierKey);
+      if (sc.restlessness && sc.restlessness.qualifierKey) scores.restlessness_rating = titleCase(sc.restlessness.qualifierKey);
       if (sc.awakeCount && sc.awakeCount.qualifierKey) scores.interruptions = titleCase(sc.awakeCount.qualifierKey);
       out.push({ start: intervals[0][0], stop: intervals[intervals.length - 1][1], intervals,
-        awakenings: typeof dto.awakeCount === "number" ? dto.awakeCount : null, scores, fromJson: true });
+        awakenings: typeof dto.awakeCount === "number" ? dto.awakeCount : null, scores, ranges: jsonRanges(sc), fromJson: true });
     }
   }
   for (const k in obj) if (k !== "sleepLevels" && obj[k] && typeof obj[k] === "object") extractSleepJson(obj[k], out, depth + 1);
@@ -816,7 +826,7 @@ function buildRestless(list) {
   return [...byKey.values()];
 }
 
-/* ---------- OSCAR Journal (notes and bookmarks) ---------- */
+/* ---------- OSCAR Journal (a note per night) ---------- */
 const HRV_STATUS = { 0: "none", 1: "poor", 2: "low", 3: "unbalanced", 4: "balanced" };
 
 /** HRV_STATUS / SKIN_TEMP .fit: values stamped at wake-up. */
@@ -932,6 +942,7 @@ function nightInfos(readings, sleepRaw, breathing, restless, extras, resp) {
       info.stages = m; info.awakenings = s.awakenings;
     }
     for (const [k, v] of Object.entries(s.scores || {})) if (typeof info.scores[k] !== "number") info.scores[k] = v;
+    for (const [k, v] of Object.entries(s.ranges || {})) { info.ranges = info.ranges || {}; if (!(k in info.ranges)) info.ranges[k] = v; }
   }
   for (const b of breathing) { const info = get(b.key); info.breathing = b; if (info.start === undefined) { info.start = b.start; info.stop = b.stop; } }
   for (const r of restless) { const info = get(r.key); info.restless = r.count; if (info.start === undefined) { info.start = r.start; info.stop = r.stop; } }
@@ -958,47 +969,95 @@ function nightInfos(readings, sleepRaw, breathing, restless, extras, resp) {
   return nights;
 }
 
+const GOOD_COLOR = "#2e7d32", BAD_COLOR = "#c62828";
+const DEFAULT_RANGES = { deep: [16, 33], rem: [21, 31], light: [30, 64], total: [420, 540], awakenings: [0, 1], stress: [0, 25] };
+const escH = (x) => String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const colorTxt = (text, good) => (good === null || good === undefined ? escH(text)
+  : `<span style="color:${good ? GOOD_COLOR : BAD_COLOR}">${escH(text)}</span>`);
+const judge = (v, goodIf, badIf) => (v === null || v === undefined ? null : goodIf(v) ? true : badIf(v) ? false : null);
+const scoreTxt = (v) => (typeof v === "number" ? `${pyFixed(v, 0)}/100` : String(v));
+const scoreLabel = (name, v) => (typeof v === "number" ? `${name} score ` : `${name} `);
+function scoreJudge(v) {
+  if (typeof v === "number") return judge(v, (x) => x >= 80, (x) => x < 60);
+  const w = String(v).toLowerCase();
+  return w === "excellent" || w === "good" ? true : w === "poor" ? false : null;
+}
+
 function journalNote(info) {
-  const sc = info.scores, ex = info.extras, lines = [], first = [];
-  if (info.start !== undefined) first.push(`${hhmm(fitToDate(info.start))}-${hhmm(fitToDate(info.stop))}`);
-  if ("overall" in sc) first.push(`score ${sc.overall}` + ("quality" in sc ? ` (quality ${sc.quality})` : ""));
-  if ("hrv" in ex) {
-    const det = [ex.hrv_status, "hrv_weekly" in ex ? `weekly ${pyFixed(ex.hrv_weekly, 0)}` : null].filter(Boolean);
-    first.push(`HRV ${pyFixed(ex.hrv, 0)} ms` + (det.length ? ` (${det.join(", ")})` : ""));
+  const sc = info.scores, ex = info.extras, rng = { ...DEFAULT_RANGES, ...(info.ranges || {}) }, lines = [];
+  const line = (title, items) => { items = items.filter(Boolean); if (items.length) lines.push(`<b>${escH(title)}:</b> ` + items.join(" · ")); };
+  let items = [];
+  if (info.start !== undefined) items.push(escH(`${hhmm(fitToDate(info.start))}-${hhmm(fitToDate(info.stop))}`));
+  const m = info.stages, asleep = m ? m.Deep + m.Light + m.REM : 0;
+  if (m && asleep) {
+    const [lo, hi] = rng.total;
+    items.push("total " + colorTxt(durTxt(asleep), lo === hi ? asleep >= lo : asleep >= lo && asleep <= hi ? true : asleep < lo ? false : null));
   }
-  if ("rhr" in ex) first.push(`resting HR ${pyFixed(ex.rhr, 0)}`);
-  if ("skin_temp" in ex) first.push(`skin temp ${signed(ex.skin_temp, 1)} °C`);
-  if (first.length) lines.push("Sleep: " + first.join(", "));
-  if (info.stages) {
-    const m = info.stages, p = [`deep ${durTxt(m.Deep)}`, `light ${durTxt(m.Light)}`, `REM ${durTxt(m.REM)}`, `awake ${durTxt(m.WAKE)}`];
-    if (info.awakenings !== null && info.awakenings !== undefined) p.push(`${info.awakenings} awakenings`);
-    lines.push("Stages: " + p.join(", "));
+  if ("overall" in sc) items.push("score " + colorTxt(scoreTxt(sc.overall), scoreJudge(sc.overall)));
+  if ("quality" in sc) items.push("quality " + colorTxt(scoreTxt(sc.quality), scoreJudge(sc.quality)));
+  line("Sleep", items);
+  if (m) {
+    const stage = (name, key, label) => {
+      const mins = m[name], pct = asleep ? 100 * mins / asleep : 0, [lo, hi] = rng[key];
+      const good = key === "light" ? (pct >= lo && pct <= hi ? true : null) : pct >= lo;
+      return label + " " + colorTxt(`${durTxt(mins)} (${pyFixed(pct, 0)} %)`, good);
+    };
+    items = [stage("Deep", "deep", "deep"), stage("Light", "light", "light"), stage("REM", "rem", "REM"),
+      "awake " + colorTxt(durTxt(m.WAKE), judge(m.WAKE, (x) => x <= 30, (x) => x > 60))];
+    if (info.awakenings !== null && info.awakenings !== undefined) {
+      const hi = rng.awakenings[1];
+      items.push(colorTxt(`${info.awakenings} awakenings`, judge(info.awakenings, (x) => x <= hi, (x) => x >= hi + 3)));
+    }
+    line("Stages", items);
   }
-  const rest = [];
-  if (info.restless !== undefined) rest.push(`${info.restless} restless moments`);
-  if ("restlessness" in sc) rest.push(`restlessness ${numTxt(sc.restlessness)}`);
-  if ("interruptions" in sc) rest.push(`interruptions ${numTxt(sc.interruptions)}`);
-  if (rest.length) lines.push("Restlessness: " + rest.join(", "));
   if (info.spo2) {
     const o = info.spo2;
-    lines.push(`SpO2: avg ${pyFixed(o.avg, 1)} %, min ${o.min} % at ${hhmm(fitToDate(o.min_t))}, ${o.below90} min under 90 %`);
+    line("SpO2", [
+      "avg " + colorTxt(`${pyFixed(o.avg, 1)} %`, judge(o.avg, (x) => x >= 95, (x) => x < 93)),
+      "min " + colorTxt(`${o.min} %`, judge(o.min, (x) => x >= 90, (x) => x < 88)) + escH(` at ${hhmm(fitToDate(o.min_t))}`),
+      colorTxt(`${o.below90} min under 90 %`, judge(o.below90, (x) => x === 0, (x) => x > 10)),
+    ]);
   }
-  const vit = [];
-  if ("resp" in ex) vit.push(`breathing ${pyFixed(ex.resp, 1)}/min`);
-  if ("avg_hr" in ex) vit.push(`avg HR ${pyFixed(ex.avg_hr, 0)}`);
-  if ("stress" in ex || "stress" in sc) vit.push(`sleep stress ${numTxt("stress" in ex ? ex.stress : sc.stress)}`);
-  if ("body_battery" in ex) vit.push(`Body Battery ${signed(ex.body_battery, 0)}`);
-  if (vit.length) lines.push("Vitals: " + vit.join(", "));
-  if (info.day_before) { const txt = dayBeforeText(info.day_before); if (txt) lines.push("Day before: " + txt); }
+  items = [];
+  if ("resp" in ex) items.push("rate " + colorTxt(`${pyFixed(ex.resp, 1)}/min`, judge(ex.resp, (x) => x >= 12 && x <= 20, (x) => x < 10 || x > 22)));
   if (info.breathing) {
     const b = info.breathing, mins = { low: 0, medium: 0, high: 0 };
     for (const [t0, t1, sev] of b.periods) if (sev in mins) mins[sev] += (t1 - t0) / 60;
-    const parts = Object.entries(mins).filter(([, v]) => v >= 1).map(([k, v]) => `${k} ${durTxt(v)}`);
-    lines.push("Breathing disruptions: " + (parts.length ? parts.join(", ") : "none") + (b.overall ? ` (overall ${b.overall})` : ""));
+    const parts = Object.entries(mins).filter(([, v]) => v >= 1).map(([k, v]) => colorTxt(`${k} ${durTxt(v)}`, k === "low" ? null : false));
+    items.push("disruptions " + (parts.length ? parts.join(", ") : colorTxt("none", true)));
+    if (b.overall) items.push("overall " + colorTxt(b.overall, b.overall === "none" ? true : (b.overall === "medium" || b.overall === "high") ? false : null));
+  }
+  line("Breathing", items);
+  items = [];
+  if ("hrv" in ex) {
+    const st = ex.hrv_status, good = st === "balanced" ? true : (st === "low" || st === "poor") ? false : null;
+    const det = [st, "hrv_weekly" in ex ? `weekly ${pyFixed(ex.hrv_weekly, 0)}` : null].filter(Boolean);
+    items.push("HRV " + colorTxt(`${pyFixed(ex.hrv, 0)} ms` + (det.length ? ` (${det.join(", ")})` : ""), good));
+  }
+  if ("rhr" in ex) items.push(escH(`resting HR ${pyFixed(ex.rhr, 0)}`));
+  if ("avg_hr" in ex) items.push(escH(`avg HR ${pyFixed(ex.avg_hr, 0)}`));
+  if ("skin_temp" in ex) items.push("skin temp " + colorTxt(`${signed(ex.skin_temp, 1)} \u00b0C`, judge(Math.abs(ex.skin_temp), (x) => x <= 0.5, (x) => x >= 1.0)));
+  const stress = "stress" in ex ? ex.stress : sc.stress;
+  if (stress !== undefined && stress !== null) { const shi = rng.stress[1]; items.push("sleep stress " + colorTxt(numTxt(stress), judge(stress, (x) => x <= shi, (x) => x > 50))); }
+  if ("body_battery" in ex) items.push("Body Battery " + colorTxt(signed(ex.body_battery, 0), judge(ex.body_battery, (x) => x >= 50, (x) => x < 20)));
+  line("Heart and recovery", items);
+  items = [];
+  const rating = "restlessness_rating" in sc ? scoreJudge(sc.restlessness_rating) : null;
+  if (info.restless !== undefined) items.push(colorTxt(`${info.restless} restless moments`, rating));
+  if ("restlessness" in sc) items.push(scoreLabel("restlessness", sc.restlessness) + colorTxt(scoreTxt(sc.restlessness), rating !== null ? rating : scoreJudge(sc.restlessness)));
+  if ("interruptions" in sc) items.push(scoreLabel("interruptions", sc.interruptions) + colorTxt(scoreTxt(sc.interruptions), scoreJudge(sc.interruptions)));
+  line("Restlessness", items);
+  const d = info.day_before;
+  if (d) {
+    items = [];
+    if ("steps" in d) items.push(colorTxt(`${d.steps.toLocaleString("en-US")} steps`, judge(d.steps, (x) => x >= 7500, (x) => x < 3000)));
+    if (d.distance_km) items.push(escH(`${pyFixed(d.distance_km, 1)} km`));
+    if (d.active_min) items.push(escH(`${durTxt(d.active_min)} active`));
+    if (d.active_kcal) items.push(escH(`${pyFixed(d.active_kcal, 0)} active kcal`));
+    line("Day before", items);
   }
   if (!lines.length) return null;
-  const esc = (x) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return "<p><b>Garmin</b><br/>" + lines.map(esc).join("<br/>") + "</p>";
+  return "<p><b>Garmin</b><br/>" + lines.join("<br/>") + "</p>";
 }
 
 function journalBookmarks(info) {
@@ -1019,15 +1078,10 @@ function writeJournal(readings, sleepRaw, breathing, restless, extras, resp, fro
     const info = infos.get(k);
     if (from && k < from) continue;
     if (!info.stages && !info.breathing) continue;          // night not finished yet
-    const note = journalNote(info), bms = journalBookmarks(info);
-    if (!note && !bms.length) continue;
+    const note = journalNote(info);
+    if (!note) continue;
     let x = `    <day date="${k}" lastupdated="">\n`;
-    if (note) x += `      <note>\n        <text>${xa(note).replace(/&quot;/g, '"')}</text>\n      </note>\n`;
-    if (bms.length) {
-      x += "      <bookmarks>\n";
-      for (const [a, b, t] of bms) x += `        <bookmark notes="${xa(t)}" start="${a}" end="${b}" />\n`;
-      x += "      </bookmarks>\n";
-    }
+    x += `      <note>\n        <text>${xa(note).replace(/&quot;/g, '"')}</text>\n      </note>\n`;
     days.push(x + "    </day>\n");
   }
   if (!days.length) return null;
