@@ -11,10 +11,12 @@ done.
 
 # garmin2oscar
 <img width="2034" height="1048" alt="graph_pules_motion" src="https://github.com/user-attachments/assets/9abb0149-c313-4842-aa85-c65eb46b2148" />
+<img width="802" height="364" alt="journal" src="https://github.com/user-attachments/assets/43b01209-f9ea-49be-bdfe-d5fc3a1d0025" />
+
 
 # garmin2oscar
 
-Import the overnight **SpO2, pulse, motions, sleep stages, breathing disruptions** recorded by a Garmin watch into
+Import the overnight **SpO2, pulses, motions, sleep stages, breathing disruptions & more** recorded by a Garmin watch into
 [OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
 
 OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
@@ -29,12 +31,21 @@ OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
 - Exports Garmin's **breathing disruptions** ("breathing variations") as two `.csv` files:
   a summary per night and every period. OSCAR can't display them; open them in a
   spreadsheet to compare their trend with your CPAP's AHI.
+- Writes `garmin_nights_summary.csv`, **one row per night** with what OSCAR can't show:
+  Garmin's sleep, restlessness and interruptions scores, awakenings, restless moments,
+  stage minutes, SpO2 summary and breathing disruptions. It also gives the **activity of the
+  day before** each night (steps, distance, active time, active kcal; with
+  `garmin2oscar_spo2.py` also intensity minutes, floors, stress, Body Battery and the
+  day's activities), which also appears in the Journal note. Scores are numbers when they
+  come from `.fit` files, Garmin Connect's ratings (e.g. "Fair") otherwise.
 - Converts the **sleep stages** (deep, light, REM, awake) into one file for OSCAR's
   **Import Dreem data**, so OSCAR shows a sleep-stage graph next to your CPAP data.
 - Handles daylight saving time. On a night that starts on a DST-change day,
   readings before midnight are dropped automatically, otherwise OSCAR labels
   that night's time axis 1 hour off (a display quirk in OSCAR).
 - Optional automatic download from Garmin Connect, so no manual export is needed.
+- **Restless moments** (Garmin Connect only, so with `garmin2oscar_spo2.py` or the
+  `sleep.json` files on the web page) can be shown in OSCAR with `--somnopose`.
 - With the automatic download, Garmin's per-minute **sleep movement** is added too
   (shown as OSCAR's Movement graph, value = Garmin activity level × 10). It isn't in
   the `.fit` files, so it's not available when converting an export.
@@ -85,13 +96,30 @@ python3 fit2oscar_spo2.py *_WELLNESS.fit
 3. Select all files (Cmd+A / Ctrl+A) and confirm.
 4. For sleep stages, choose **Import Dreem data** and pick
    `oscar_dreem/garmin_sleep_stages.csv`. Nights already imported are skipped.
-5. With `--breathing-as-position` (or the matching box on the web page), choose
-   **Import Somnopose data** and pick `oscar_somnopose/garmin_breathing_somnopose.csv`.
+5. With `--somnopose` (or the matching box on the web page), choose
+   **Import Somnopose data** and pick `oscar_somnopose/garmin_somnopose.csv`.
+6. For the Journal (notes and bookmarks), **follow these steps exactly**, because OSCAR's
+   Journal import relies on the note box shown on screen (bug in OSCAR):
+   1. **File → Backup Journal** (safety copy).
+   2. Display a day that is **not** in `garmin_journal.xml` (e.g. before your first night
+      with the watch) and whose **Notes box is not empty**: type a temporary "x" if needed.
+   3. **File → Import Journal** and pick `oscar_journal/garmin_journal.xml`.
+   4. Remove the temporary "x", change day, and check a couple of days.
+
+   If the note box is empty during the import, OSCAR **erases** the notes of the imported
+   days; if the day on screen is in the file, its note is **replaced** by the Garmin one.
 
 Prefer the Oximetry Wizard? Add `--format md300` to get ChoiceMMed `.dat` files.
 Import them one night at a time with *Import from a data file* and choose
 *use the oximeter's internal clock*. If you abandon a wizard import halfway,
 restart OSCAR before the next one.
+
+### Running it every day
+
+The files that gather several nights (`garmin_nights_summary.csv`, the sleep stages,
+the breathing files and the Somnopose file) are **cumulative**: each run adds its
+nights and updates the ones it covers again, so a daily run builds up a full history.
+Re-importing them into OSCAR is safe: it skips the nights it already has.
 
 ## Options
 
@@ -101,7 +129,11 @@ restart OSCAR before the next one.
 | `--no-csv` | Don't write the `.csv` files |
 | `--no-stages` | Don't write the sleep-stage file |
 | `--no-breathing` | Don't write the breathing-disruption files |
-| `--breathing-as-position` | Also write the breathing disruptions for OSCAR's **Import Somnopose data**: they appear as an "Orientation" graph (0 not measured, 10 none, 20 low, 30 medium, 40 high). Off by default. |
+| `--somnopose` | Also write a file for OSCAR's **Import Somnopose data**: breathing disruptions as an "Orientation" graph (0 not measured, 10 none, 20 low, 30 medium, 40 high) and restless moments as an "Inclination" graph (one spike each). Off by default. Old name: `--breathing-as-position`. |
+| `--no-summary` | Don't write `garmin_nights_summary.csv` |
+| `--no-journal` | Don't write `oscar_journal/garmin_journal.xml`. By default it is written for OSCAR's **File → Import Journal**: a note per night (scores, HRV, resting HR, stages, SpO2, breathing, Body Battery…) and bookmarks on breathing disruptions and the lowest SpO2. |
+| `--no-day-before` | `garmin2oscar` only: don't fetch the activity of the day before each night |
+| `--overwrite` | Start the cumulative files from scratch instead of adding to them |
 | `--timezone Europe/Paris` | Time zone (default: the computer's) |
 | `--min-minutes 30` | Ignore recordings shorter than this (daytime spot checks) |
 | `--min-confidence N` | Drop readings below Garmin's confidence value N (see caveats) |
