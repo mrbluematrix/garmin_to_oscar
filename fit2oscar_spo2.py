@@ -34,10 +34,24 @@ Options:
     --format FMT         viatom (default) or md300
     --no-stages          do not write the sleep-stage file
     --no-breathing       do not write the breathing-disruption files
-    --breathing-as-position
-                         also write the breathing disruptions as a Somnopose
-                         file: OSCAR shows them as an "Orientation" graph
-                         (0 not measured, 10 none, 20 low, 30 medium, 40 high)
+    --somnopose          also write a Somnopose file for OSCAR: breathing
+                         disruptions as an "Orientation" graph (0 not measured,
+                         10 none, 20 low, 30 medium, 40 high) and restless
+                         moments as an "Inclination" graph (old name of this
+                         option: --breathing-as-position)
+    --no-summary         do not write garmin_nights_summary.csv (one row per
+                         night: Garmin scores, counts, stages, SpO2, breathing)
+    --no-journal         do not write oscar_journal/garmin_journal.xml (written
+                         by default) for OSCAR's File > Import Journal: a note
+                         per night (Garmin scores, HRV, stages, SpO2,
+                         breathing...) and bookmarks on breathing disruptions
+                         and on the lowest SpO2
+    --overwrite          start the cumulative files from scratch (see below)
+
+The files gathering several nights (garmin_nights_summary.csv, the sleep
+stages, the breathing files and the Somnopose file) are cumulative: each run
+adds its nights and updates the ones it covers again, so running the script
+every day builds up a history. OSCAR skips the nights it already has.
 
 md300 .dat format (read by MD300W1Loader::readDATFile in OSCAR):
     byte 0: id, bytes 1-2: number of records (little-endian)
@@ -76,6 +90,7 @@ BASE_FMT = {  # base type -> (struct code, size, invalid value)
     0x83: ("h", 2, 0x7FFF), 0x84: ("H", 2, 0xFFFF), 0x85: ("i", 4, 0x7FFFFFFF),
     0x86: ("I", 4, 0xFFFFFFFF), 0x0A: ("B", 1, 0x00), 0x8B: ("H", 2, 0x0000),
     0x8C: ("I", 4, 0x00000000), 0x0D: ("B", 1, 0xFF),
+    0x88: ("f", 4, None), 0x89: ("d", 8, None),      # float32 / float64 (invalid = NaN)
 }
 
 
@@ -136,7 +151,7 @@ def read_fields(data, pos, d):
         fmt = BASE_FMT.get(btype)
         if fmt and size == fmt[1]:
             v = struct.unpack_from(d["endian"] + fmt[0], data, pos)[0]
-            if v != fmt[2]:
+            if (v == v) if fmt[2] is None else (v != fmt[2]):   # NaN != NaN
                 vals[num] = v
         pos += size
     pos += d["devsize"]
@@ -364,6 +379,8 @@ MSG_EVENT = 21              # event 74 = sleep window start (type 0) / stop (typ
 MSG_SLEEP_LEVEL = 275       # 253 timestamp = END of the interval, 0 sleep_level
 MSG_SLEEP_ASSESSMENT = 346  # 11 awakenings_count
 FIT_STAGES = {0: "NA", 1: "WAKE", 2: "Light", 3: "Deep", 4: "REM"}
+FIT_SCORES = {"overall": 6, "quality": 7, "restlessness": 10, "interruptions": 14}  # msg 346
+HRV_STATUS = {0: "none", 1: "poor", 2: "low", 3: "unbalanced", 4: "balanced"}
 JSON_STAGES = {0: "Deep", 1: "Light", 2: "REM", 3: "WAKE"}   # Garmin Connect sleepLevels
 
 
@@ -375,14 +392,19 @@ def extract_sleep(path):
     the interval that started at the previous one (the first one starts at
     the sleep window start, the last one is stamped at the window end).
     """
-    starts, stops, levels, awakenings = [], [], [], None
+    starts, stops, levels, awakenings, scores = [], [], [], None, {}
     for gnum, v in parse_fit(path):
         if gnum == MSG_EVENT and v.get(0) == 74 and 253 in v:
             (starts if v.get(1, 0) == 0 else stops).append(v[253])
         elif gnum == MSG_SLEEP_LEVEL and 253 in v and 0 in v:
             levels.append((v[253], v[0]))
-        elif gnum == MSG_SLEEP_ASSESSMENT and 11 in v:
-            awakenings = v[11]
+        elif gnum == MSG_SLEEP_ASSESSMENT:
+            awakenings = v.get(11, awakenings)
+            for key, num in FIT_SCORES.items():
+                if num in v:
+                    scores[key] = v[num]
+            if 15 in v:
+                scores["stress"] = v[15] / 100
     if not levels:
         return []
     levels.sort()
@@ -395,7 +417,8 @@ def extract_sleep(path):
         prev = max(prev, t)
     if not intervals:
         return []
-    return [{"start": start, "stop": stop, "intervals": intervals, "awakenings": awakenings}]
+    return [{"start": start, "stop": stop, "intervals": intervals, "awakenings": awakenings,
+             "scores": scores}]
 
 
 def sleep_from_json(data, to_fit_ts):
@@ -411,8 +434,32 @@ def sleep_from_json(data, to_fit_ts):
         return []
     intervals.sort()
     dto = (data or {}).get("dailySleepDTO") or {}
+    sc = dto.get("sleepScores") or {}
+    scores = {}
+    if isinstance((sc.get("overall") or {}).get("value"), (int, float)):
+        scores["overall"] = sc["overall"]["value"]
+    for key in ("restlessness", "awakeCount"):        # JSON only gives a rating word
+        q = (sc.get(key) or {}).get("qualifierKey")
+        if q:
+            scores["restlessness" if key == "restlessness" else "interruptions"] = q.title()
     return [{"start": intervals[0][0], "stop": intervals[-1][1], "intervals": intervals,
-             "awakenings": dto.get("awakeCount")}]
+             "awakenings": dto.get("awakeCount"), "scores": scores}]
+
+
+def restless_from_json(data, to_fit_ts):
+    """Restless moments (Garmin Connect sleep JSON): [{"start", "stop", "moments"}]."""
+    data = data or {}
+    moments = sorted(t for t in (to_fit_ts(it.get("startGMT"))
+                                 for it in data.get("sleepRestlessMoments") or [])
+                     if t is not None)
+    if not moments:
+        return []
+    dto = data.get("dailySleepDTO") or {}
+    start = to_fit_ts(dto.get("sleepStartTimestampGMT")) or moments[0]
+    stop = to_fit_ts(dto.get("sleepEndTimestampGMT")) or moments[-1]
+    count = data.get("restlessMomentsCount")
+    return [{"start": min(start, moments[0]), "stop": max(stop, moments[-1]), "moments": moments,
+             "count": count if isinstance(count, int) else len(moments)}]
 
 
 def clip_session(sess, t_from):
@@ -482,7 +529,7 @@ DREEM_HEADER = ("Type;Start Time;Stop Time;Sleep Onset Duration;Sleep Duration;"
                 "Wake After Sleep Onset Duration;Number of awakenings;Sleep efficiency;Hypnogram")
 
 
-def write_dreem_csv(path, sessions, tz, log=print):
+def write_dreem_csv(path, sessions, tz, log=print, overwrite=False):
     """Writes every sleep-stage session (deduplicated) into one Dreem CSV."""
     uniq = []
     for sess in sorted(sessions, key=lambda x: x["start"]):
@@ -491,13 +538,9 @@ def write_dreem_csv(path, sessions, tz, log=print):
         uniq.append(sess)
     if not uniq:
         return None
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        f.write(DREEM_HEADER + "\n")
-        for sess in uniq:
-            f.write(dreem_row(sess, tz) + "\n")
-    first, last = to_local(uniq[0]["start"], tz), to_local(uniq[-1]["start"], tz)
-    log(f"-> {path}: sleep stages for {len(uniq)} night(s), {first:%Y-%m-%d} to {last:%Y-%m-%d}")
+    report = save_rows(path, DREEM_HEADER, [dreem_row(sess, tz) for sess in uniq],
+                       key=lambda r: _night_from_text(r.split(";")[1]), overwrite=overwrite, log=log)
+    log(f"-> {path}: sleep stages, {report}")
     return path
 
 
@@ -574,50 +617,143 @@ def _local_midnight(day, tz):
     return int(unix) - 631065600
 
 
-def write_somnopose_csv(path, sessions, tz, keep_dst_evening=False, log=print):
-    """Breathing disruptions as a Somnopose file (OSCAR: "Import Somnopose data").
+def night_of(t, tz):
+    """The evening date (OSCAR's day, split at noon) a FIT timestamp belongs to."""
+    lt = to_local(t, tz)
+    return (lt - dt.timedelta(days=1)).date() if lt.hour < 12 else lt.date()
 
-    OSCAR shows the Orientation column as its own graph, without touching
-    the oximetry. Values: 0 not measured, 10 none, 20 low, 30 medium, 40 high.
+
+def _dedupe_by_night(sessions, tz):
+    out = {}
+    for sess in sorted(sessions, key=lambda x: x["start"]):
+        out.setdefault(night_of(sess["start"], tz), sess)
+    return out
+
+
+def write_somnopose_csv(path, breathing, restless, tz, keep_dst_evening=False, log=print,
+                        overwrite=False):
+    """Breathing disruptions and restless moments as a Somnopose file
+    (OSCAR: "Import Somnopose data"), one session per night.
+
+    OSCAR shows each column as its own graph, without touching the oximetry:
+      Orientation = breathing disruptions: 0 not measured, 10 none, 20 low,
+                    30 medium, 40 high
+      Inclination = restless moments: a spike to 1 at each moment
     Timestamps are seconds since 2001-01-01 UTC; a "-" line ends a night. As
     for the oximetry, a night starting on a DST-change evening begins at
     midnight, otherwise OSCAR would label its time axis 1 hour off.
     """
-    uniq = []
-    for sess in sorted(sessions, key=lambda x: x["start"]):
-        if uniq and abs(sess["start"] - uniq[-1]["start"]) < 1800:
-            continue
-        uniq.append(sess)
-    lines = ["Timestamp,Orientation"]
-    nights = 0
-    for sess in uniq:
-        periods = sess["periods"]
-        start = to_local(sess["start"], tz)
-        evening = (start - dt.timedelta(days=1)).date() if start.hour < 12 else start.date()
-        nxt = evening + dt.timedelta(days=1)
-        midnight = _local_midnight(nxt, tz)
+    br, rs = _dedupe_by_night(breathing, tz), _dedupe_by_night(restless, tz)
+    blocks = []
+    for night in sorted(set(br) | set(rs)):
+        start = min(x["start"] for x in (br.get(night), rs.get(night)) if x)
+        stop = max(x["stop"] for x in (br.get(night), rs.get(night)) if x)
+        midnight = _local_midnight(night + dt.timedelta(days=1), tz)
+        cut = None
         if (not keep_dst_evening and not isinstance(tz, int)
-                and midnight - _local_midnight(evening, tz) != 86400 and sess["start"] < midnight):
-            periods = [(max(t0, midnight), t1, sev) for t0, t1, sev in periods if t1 > midnight]
-        if not periods:
+                and midnight - _local_midnight(night, tz) != 86400 and start < midnight):
+            cut, start = midnight, max(start, midnight)
+        rows = []                                    # (time, order, line)
+        if night in br:
+            for t0, t1, sev in br[night]["periods"]:
+                if cut is not None:
+                    if t1 <= cut:
+                        continue
+                    t0 = max(t0, cut)
+                v = SOMNOPOSE_VALUE.get(sev, 0)
+                # at a shared timestamp the end of a period comes before the next start
+                rows += [(t0, 2, f"{t0 - SOMNOPOSE_EPOCH},{v},"), (t1, 0, f"{t1 - SOMNOPOSE_EPOCH},{v},")]
+        if night in rs:
+            pts = [(start, 0)] + [(m, 1) for m in rs[night]["moments"] if m >= start] + [(stop, 0)]
+            for t, v in pts:
+                if v:
+                    rows += [(t - 30, 1, f"{t - 30 - SOMNOPOSE_EPOCH},,0"),
+                             (t, 1, f"{t - SOMNOPOSE_EPOCH},,1"),
+                             (t + 30, 1, f"{t + 30 - SOMNOPOSE_EPOCH},,0")]
+                else:
+                    rows.append((t, 1, f"{t - SOMNOPOSE_EPOCH},,0"))
+        if not rows:
             continue
-        for t0, t1, sev in periods:
-            v = SOMNOPOSE_VALUE.get(sev, 0)
-            lines.append(f"{t0 - SOMNOPOSE_EPOCH},{v}")
-            lines.append(f"{t1 - SOMNOPOSE_EPOCH},{v}")
-        lines.append("-")
-        nights += 1
-    if not nights:
+        rows.sort(key=lambda r: (r[0], r[1]))
+        blocks.append([r[2] for r in rows])
+    if not blocks:
         return None
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    log(f"-> {path}: breathing disruptions for {nights} night(s) "
-        "(0 not measured, 10 none, 20 low, 30 medium, 40 high)")
+    key = lambda b: str(night_of(int(float(b[0].split(",")[0])) + SOMNOPOSE_EPOCH, tz))
+    report = save_blocks(path, "Timestamp,Orientation,Inclination", blocks, key,
+                         overwrite=overwrite, log=log)
+    log(f"-> {path}: {report} (Orientation = breathing disruptions, "
+        "Inclination = restless moments)")
     return path
 
 
-def write_breathing_csv(outdir, sessions, tz, log=print):
+SUMMARY_HEADER = ("Night,Sleep start,Sleep end,Sleep score,Sleep quality,Restlessness,Interruptions,"
+                  "Awakenings,Restless moments,Deep (min),Light (min),REM (min),Awake (min),"
+                  "SpO2 avg,SpO2 min,SpO2 under 90% (min),Breathing overall,"
+                  "Breathing low (min),Breathing medium (min),Breathing high (min),"
+                  "Steps (day before),Distance km (day before),Active min (day before),"
+                  "Active kcal (day before),Intensity min (day before),Activities (day before)")
+
+
+def write_summary_csv(path, readings, stages, breathing, restless, tz, log=print, overwrite=False,
+                      days=None):
+    """One row per night with what OSCAR can't show: Garmin's scores, counts,
+    stage minutes, SpO2 summary and breathing disruptions. Scores come from
+    the .fit file when available (numbers), else from Garmin Connect (ratings)."""
+    st = {}
+    for sess in sorted(stages, key=lambda x: (x["start"], "quality" not in (x.get("scores") or {}))):
+        n = night_of(sess["start"], tz)
+        cur = st.get(n)
+        if cur is None:
+            st[n] = dict(sess, scores=dict(sess.get("scores") or {}))
+        else:                                        # merge scores; .fit numbers win
+            for k, v in (sess.get("scores") or {}).items():
+                if not isinstance(cur["scores"].get(k), (int, float)):
+                    cur["scores"][k] = v
+    br, rs = _dedupe_by_night(breathing, tz), _dedupe_by_night(restless, tz)
+    spo2 = {}
+    for t, v, _ in readings:
+        spo2.setdefault(night_of(t, tz), []).append(v)
+    spo2 = {n: v for n, v in spo2.items() if len(v) >= 30}
+    nights = sorted(set(st) | set(br) | set(rs) | set(spo2))
+    if not nights:
+        return None
+    days = days or {}
+    out_rows = []
+    for n in nights:
+        s_, b_, r_, o_ = st.get(n), br.get(n), rs.get(n), spo2.get(n)
+        src = s_ or b_ or r_
+        sc = (s_ or {}).get("scores") or {}
+        mins = {"Deep": 0, "Light": 0, "REM": 0, "WAKE": 0}
+        for t0, t1, stage in (s_ or {}).get("intervals", []):
+            if stage in mins:
+                mins[stage] += (t1 - t0) / 60
+        bm = {"low": 0, "medium": 0, "high": 0}
+        for t0, t1, sev in (b_ or {}).get("periods", []):
+            if sev in bm:
+                bm[sev] += (t1 - t0) / 60
+        cells = [
+            str(n),
+            f"{to_local(src['start'], tz):%Y-%m-%d %H:%M}" if src else "",
+            f"{to_local(src['stop'], tz):%Y-%m-%d %H:%M}" if src else "",
+            str(sc.get("overall", "")), str(sc.get("quality", "")),
+            str(sc.get("restlessness", "")), str(sc.get("interruptions", "")),
+            "" if not s_ or s_.get("awakenings") is None else str(s_["awakenings"]),
+            str(r_["count"]) if r_ else "",
+        ]
+        cells += [f"{mins[k]:.0f}" if s_ else "" for k in ("Deep", "Light", "REM", "WAKE")]
+        cells += ([f"{sum(o_) / len(o_):.1f}", str(min(o_)), str(sum(1 for v in o_ if v < 90))]
+                  if o_ else ["", "", ""])
+        cells += ([b_.get("overall") or ""] + [f"{bm[k]:.0f}" for k in ("low", "medium", "high")]
+                  if b_ else ["", "", "", ""])
+        cells += day_before_cells(days.get(str(n)))
+        out_rows.append(",".join(cells))
+    report = save_rows(path, SUMMARY_HEADER, out_rows, key=lambda r: r.split(",")[0],
+                       overwrite=overwrite, log=log)
+    log(f"-> {path}: {report}")
+    return path
+
+
+def write_breathing_csv(outdir, sessions, tz, log=print, overwrite=False):
     """Writes breathing/garmin_breathing_summary.csv (one row per night) and
     breathing/garmin_breathing_periods.csv (one row per period)."""
     uniq = []
@@ -632,24 +768,487 @@ def write_breathing_csv(outdir, sessions, tz, log=print):
     levels = ["none", "low", "medium", "high", "not measured"]
     summary = os.path.join(folder, "garmin_breathing_summary.csv")
     periods = os.path.join(folder, "garmin_breathing_periods.csv")
-    with open(summary, "w") as fs, open(periods, "w") as fp:
-        fs.write("Night,Start,End,Overall,None (min),Low (min),Medium (min),High (min),Not measured (min)\n")
-        fp.write("Night,Start,End,Minutes,Severity\n")
-        for sess in uniq:
-            start = to_local(sess["start"], tz)
-            night = (start - dt.timedelta(hours=12)).date() if start.hour < 12 else start.date()
-            mins = {k: 0.0 for k in levels}
-            for t0, t1, sev in sess["periods"]:
-                mins[sev] += (t1 - t0) / 60
-                fp.write(f"{night},{to_local(t0, tz):%Y-%m-%d %H:%M:%S},"
-                         f"{to_local(t1, tz):%Y-%m-%d %H:%M:%S},{(t1 - t0) / 60:.0f},{sev}\n")
-            fs.write(f"{night},{start:%Y-%m-%d %H:%M:%S},{to_local(sess['stop'], tz):%Y-%m-%d %H:%M:%S},"
-                     f"{sess.get('overall') or ''},"
-                     + ",".join(f"{mins[k]:.0f}" for k in levels) + "\n")
-            log(f"Breathing disruptions, night of {night}: overall {sess.get('overall') or 'n/a'}, "
-                f"low {mins['low']:.0f} min, medium {mins['medium']:.0f} min, high {mins['high']:.0f} min")
-    log(f"-> {summary}\n-> {periods}")
+    sum_rows, per_rows = [], []
+    for sess in uniq:
+        start = to_local(sess["start"], tz)
+        night = (start - dt.timedelta(hours=12)).date() if start.hour < 12 else start.date()
+        mins = {k: 0.0 for k in levels}
+        for t0, t1, sev in sess["periods"]:
+            mins[sev] += (t1 - t0) / 60
+            per_rows.append(f"{night},{to_local(t0, tz):%Y-%m-%d %H:%M:%S},"
+                            f"{to_local(t1, tz):%Y-%m-%d %H:%M:%S},{(t1 - t0) / 60:.0f},{sev}")
+        sum_rows.append(f"{night},{start:%Y-%m-%d %H:%M:%S},{to_local(sess['stop'], tz):%Y-%m-%d %H:%M:%S},"
+                        f"{sess.get('overall') or ''},"
+                        + ",".join(f"{mins[k]:.0f}" for k in levels))
+        log(f"Breathing disruptions, night of {night}: overall {sess.get('overall') or 'n/a'}, "
+            f"low {mins['low']:.0f} min, medium {mins['medium']:.0f} min, high {mins['high']:.0f} min")
+    first_col = lambda r: r.split(",")[0]
+    r1 = save_rows(summary, "Night,Start,End,Overall,None (min),Low (min),Medium (min),High (min),"
+                   "Not measured (min)", sum_rows, first_col, overwrite, log)
+    r2 = save_rows(periods, "Night,Start,End,Minutes,Severity", per_rows, first_col, overwrite, log)
+    log(f"-> {summary}: {r1}\n-> {periods}: {r2}")
     return [summary, periods]
+
+
+# ---------------------------------------------------------------------------
+# Cumulative files: a new run replaces the nights it covers and keeps the
+# others, so running the script every day builds up a history.
+# ---------------------------------------------------------------------------
+def _night_from_text(text):
+    """'2026-10-18T23:41:45+02:00' or '2026-10-18 23:41' -> '2026-10-18' (noon split)."""
+    t = dt.datetime.fromisoformat(text.strip().replace(" ", "T"))
+    return str(t.date() - dt.timedelta(days=1) if t.hour < 12 else t.date())
+
+
+def _safe_key(key):
+    def k(item):
+        try:
+            return key(item)
+        except Exception:
+            return ""
+    return k
+
+
+def _merge(path, header, items, key, overwrite, read_items, write_items, log):
+    """Shared logic for save_rows / save_blocks. Returns a short report."""
+    key = _safe_key(key)
+    new_keys = {key(i) for i in items}
+    old_items = []
+    if not overwrite and os.path.exists(path):
+        with open(path) as f:
+            text = f.read()
+        lines = text.splitlines()
+        if lines and lines[0] == header:
+            old_items = read_items(lines[1:])
+        elif lines:
+            backup = path + ".old"
+            os.replace(path, backup)
+            log(f"   (different format: the previous file was kept as {backup})")
+    old_keys = {key(i) for i in old_items}
+    kept = [i for i in old_items if key(i) not in new_keys]
+    merged = sorted(kept + items, key=key)            # stable: keeps order within a night
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(header + "\n" + write_items(merged))
+    added, updated = len(new_keys - old_keys), len(new_keys & old_keys)
+    total = len({key(i) for i in merged})
+    return f"{added} night(s) added, {updated} updated, {total} in total"
+
+
+def save_rows(path, header, rows, key, overwrite=False, log=print):
+    """Writes CSV rows (strings), keeping the rows of other nights already in the file."""
+    return _merge(path, header, rows, key, overwrite,
+                  read_items=lambda lines: [l for l in lines if l.strip()],
+                  write_items=lambda items: "".join(r + "\n" for r in items), log=log)
+
+
+def save_blocks(path, header, blocks, key, overwrite=False, log=print):
+    """Same for Somnopose files, where each night is a block of lines ending with '-'."""
+    def read_blocks(lines):
+        out, cur = [], []
+        for l in lines:
+            if l.strip() == "-":
+                if cur:
+                    out.append(cur)
+                cur = []
+            elif l.strip():
+                cur.append(l)
+        if cur:
+            out.append(cur)
+        return out
+    return _merge(path, header, blocks, key, overwrite, read_items=read_blocks,
+                  write_items=lambda items: "".join("\n".join(b) + "\n-\n" for b in items), log=log)
+
+
+# ---------------------------------------------------------------------------
+# Activity of the day before each night (steps, distance, active time...)
+# ---------------------------------------------------------------------------
+STEP_TYPES = {0, 1, 6}          # generic, running, walking: "cycles" are steps
+
+
+def extract_daily_activity(path, tz):
+    """Daily totals from a WELLNESS .fit file.
+
+    The watch keeps running totals per activity type that restart at
+    midnight; the message stamped at midnight (duration_min = 1440) closes
+    the day. Returns {"YYYY-MM-DD": {"types": {type: {field: max}}, "complete": bool}}.
+    """
+    days, mon_ts = {}, None
+    for gnum, v in parse_fit(path):
+        if gnum != MSG_MONITORING:
+            continue
+        if 253 in v and 26 not in v:
+            mon_ts = v[253]
+        t = v.get(253)
+        if 26 in v and mon_ts is not None:
+            mon_ts = mon_ts + ((v[26] - mon_ts) & 0xFFFF)
+            t = mon_ts
+        if t is None:
+            continue
+        atype = v[5] if 5 in v else (v[24] & 0x1F if 24 in v else None)
+        if atype is None:
+            continue
+        day = str(to_local(t - 1, tz).date())      # a midnight stamp closes the previous day
+        d = days.setdefault(day, {"types": {}, "complete": False})
+        if v.get(29) == 1440:
+            d["complete"] = True
+        tot = d["types"].setdefault(atype, {})
+        for field, key, scale in ((3, "cycles", 1), (2, "distance", 100), (4, "active_time", 1000),
+                                  (19, "active_kcal", 1)):
+            if field in v:
+                tot[key] = max(tot.get(key, 0), v[field] / scale)
+    return days
+
+
+def merge_daily(target, days):
+    for day, d in days.items():
+        cur = target.setdefault(day, {"types": {}, "complete": False})
+        cur["complete"] = cur["complete"] or d["complete"]
+        for atype, tot in d["types"].items():
+            ct = cur["types"].setdefault(atype, {})
+            for k, v in tot.items():
+                ct[k] = max(ct.get(k, 0), v)
+    return target
+
+
+def daily_totals_from_fit(merged):
+    """{day: totals} for the complete days only."""
+    out = {}
+    for day, d in merged.items():
+        if not d["complete"]:
+            continue
+        types = d["types"].values()
+        out[day] = {
+            "steps": int(sum(t.get("cycles", 0) for a, t in d["types"].items() if a in STEP_TYPES)),
+            "distance_km": sum(t.get("distance", 0) for t in types) / 1000,
+            "active_min": sum(t.get("active_time", 0) for t in types) / 60,
+            "active_kcal": sum(t.get("active_kcal", 0) for t in types),
+        }
+    return out
+
+
+def daily_totals_from_json(stats, activities):
+    """Day totals from Garmin Connect's daily summary and activity list."""
+    stats = stats or {}
+    out = {}
+    num = lambda k: stats.get(k) if isinstance(stats.get(k), (int, float)) and not isinstance(stats.get(k), bool) else None
+    if num("totalSteps") is not None:
+        out["steps"] = int(num("totalSteps"))
+    if num("totalDistanceMeters") is not None:
+        out["distance_km"] = num("totalDistanceMeters") / 1000
+    secs = (num("activeSeconds") or 0) + (num("highlyActiveSeconds") or 0)
+    if secs:
+        out["active_min"] = secs / 60
+    if num("activeKilocalories") is not None:
+        out["active_kcal"] = num("activeKilocalories")
+    if num("moderateIntensityMinutes") is not None or num("vigorousIntensityMinutes") is not None:
+        out["moderate_min"] = num("moderateIntensityMinutes") or 0
+        out["vigorous_min"] = num("vigorousIntensityMinutes") or 0
+    if num("floorsAscended") is not None:
+        out["floors"] = num("floorsAscended")
+    if num("averageStressLevel") is not None and num("averageStressLevel") >= 0:
+        out["stress"] = num("averageStressLevel")
+    if num("bodyBatteryChargedValue") is not None:
+        out["bb_charged"] = num("bodyBatteryChargedValue")
+    if num("bodyBatteryDrainedValue") is not None:
+        out["bb_drained"] = num("bodyBatteryDrainedValue")
+    acts = []
+    for a in activities or []:
+        name = a.get("activityName") or ((a.get("activityType") or {}).get("typeKey") or "activity")
+        dur = a.get("duration")
+        dist = a.get("distance")
+        acts.append((" ".join(str(name).replace(",", " ").split()), (dur or 0) / 60, (dist or 0) / 1000))
+    if acts:
+        out["activities"] = acts
+    return out
+
+
+def day_before_text(d):
+    """'4,730 steps, 3.4 km, ...' for the Journal note."""
+    parts = []
+    if "steps" in d:
+        parts.append(f"{d['steps']:,} steps")
+    if d.get("distance_km"):
+        parts.append(f"{d['distance_km']:.1f} km")
+    if d.get("active_min"):
+        parts.append(f"{_dur(d['active_min'])} active")
+    if d.get("active_kcal"):
+        parts.append(f"{d['active_kcal']:.0f} active kcal")
+    if "moderate_min" in d:
+        total = d["moderate_min"] + 2 * d["vigorous_min"]
+        parts.append(f"{total:.0f} intensity min ({d['moderate_min']:.0f} moderate, "
+                     f"{d['vigorous_min']:.0f} vigorous)")
+    if d.get("floors"):
+        parts.append(f"{d['floors']:.0f} floors")
+    if "stress" in d:
+        parts.append(f"stress {d['stress']:.0f}")
+    if "bb_charged" in d or "bb_drained" in d:
+        parts.append(f"Body Battery +{d.get('bb_charged', 0):.0f}/-{d.get('bb_drained', 0):.0f}")
+    if d.get("activities"):
+        parts.append("activities: " + "; ".join(
+            f"{n} {_dur(m)}" + (f" {k:.1f} km" if k >= 0.05 else "") for n, m, k in d["activities"]))
+    return ", ".join(parts)
+
+
+DAY_COLUMNS = ("Steps (day before),Distance km (day before),Active min (day before),"
+               "Active kcal (day before),Intensity min (day before),Activities (day before)")
+
+
+def day_before_cells(d):
+    if not d:
+        return ["", "", "", "", "", ""]
+    return [str(d["steps"]) if "steps" in d else "",
+            f"{d['distance_km']:.2f}" if "distance_km" in d else "",
+            f"{d['active_min']:.0f}" if "active_min" in d else "",
+            f"{d['active_kcal']:.0f}" if "active_kcal" in d else "",
+            f"{d['moderate_min'] + 2 * d['vigorous_min']:.0f}" if "moderate_min" in d else "",
+            "; ".join(f"{n} {m:.0f} min" for n, m, _ in d.get("activities", []))]
+
+
+# ---------------------------------------------------------------------------
+# Other overnight values (HRV, skin temperature, respiration...) for the
+# OSCAR Journal notes
+# ---------------------------------------------------------------------------
+def extract_extras(path):
+    """Overnight values from HRV_STATUS / SKIN_TEMP .fit files.
+
+    Returns [{"t": timestamp, ...}] where t is stamped at wake-up (so it
+    belongs to the previous evening's night).
+    """
+    out = []
+    for gnum, v in parse_fit(path):
+        if gnum == 370 and 253 in v:               # hrv_status_summary
+            e = {"t": v[253]}
+            if 1 in v:
+                e["hrv"] = v[1] / 128
+            if 0 in v:
+                e["hrv_weekly"] = v[0] / 128
+            if 6 in v:
+                e["hrv_status"] = HRV_STATUS.get(v[6])
+            out.append(e)
+        elif gnum == 398 and 253 in v and 1 in v:  # skin_temp_overnight
+            out.append({"t": v[253], "skin_temp": v[1]})
+    return out
+
+
+def extract_respiration(path):
+    """Breathing rate per minute from WELLNESS .fit files: {timestamp: breaths/min}."""
+    return {v[253]: v[0] / 100 for gnum, v in parse_fit(path)
+            if gnum == 297 and 253 in v and 0 in v and v[0] > 0}
+
+
+def extras_from_json(data, to_fit_ts):
+    """The same values from Garmin Connect sleep JSON (dailySleepDTO and around)."""
+    data = data or {}
+    dto = data.get("dailySleepDTO") or {}
+    t = to_fit_ts(dto.get("sleepEndTimestampGMT")) or to_fit_ts(dto.get("sleepStartTimestampGMT"))
+    if t is None:
+        return []
+    e = {"t": t}
+    pairs = [("hrv", data.get("avgOvernightHrv")), ("rhr", data.get("restingHeartRate")),
+             ("skin_temp", data.get("avgSkinTempDeviationC")),
+             ("resp", dto.get("averageRespirationValue")), ("body_battery", data.get("bodyBatteryChange")),
+             ("stress", dto.get("avgSleepStress")), ("avg_hr", dto.get("avgHeartRate"))]
+    for k, v in pairs:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            e[k] = v
+    if isinstance(data.get("hrvStatus"), str):
+        e["hrv_status"] = data["hrvStatus"].lower()
+    return [e]
+
+
+def _dur(minutes):
+    minutes = int(round(minutes))
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60}h{minutes % 60:02d}"
+
+
+def _num(v, digits=0):
+    return f"{v:.{digits}f}" if isinstance(v, (int, float)) else str(v)
+
+
+def night_infos(readings, stages, breathing, restless, extras, resp, tz, days=None):
+    """Everything known about each night, keyed by its evening date."""
+    nights = {}
+    def get(n):
+        return nights.setdefault(n, {"scores": {}, "extras": {}})
+    for sess in sorted(stages, key=lambda x: (x["start"], "quality" not in (x.get("scores") or {}))):
+        info = get(night_of(sess["start"], tz))
+        if "stages" not in info:
+            info["start"], info["stop"] = sess["start"], sess["stop"]
+            mins = {"Deep": 0, "Light": 0, "REM": 0, "WAKE": 0}
+            for t0, t1, st in sess["intervals"]:
+                if st in mins:
+                    mins[st] += (t1 - t0) / 60
+            info["stages"] = mins
+            info["awakenings"] = sess.get("awakenings")
+        for k, v in (sess.get("scores") or {}).items():
+            if not isinstance(info["scores"].get(k), (int, float)):
+                info["scores"][k] = v
+    for n, sess in _dedupe_by_night(breathing, tz).items():
+        info = get(n)
+        info["breathing"] = sess
+        info.setdefault("start", sess["start"])
+        info.setdefault("stop", sess["stop"])
+    for n, sess in _dedupe_by_night(restless, tz).items():
+        info = get(n)
+        info["restless"] = sess["count"]
+        info.setdefault("start", sess["start"])
+        info.setdefault("stop", sess["stop"])
+    by_night = {}
+    for t, v, _ in readings:
+        by_night.setdefault(night_of(t, tz), []).append((t, v))
+    for n, rs in by_night.items():
+        if len(rs) >= 30:
+            vals = [v for _, v in rs]
+            low = min(rs, key=lambda r: (r[1], r[0]))
+            get(n)["spo2"] = {"avg": sum(vals) / len(vals), "min": low[1], "min_t": low[0],
+                              "below90": sum(1 for v in vals if v < 90)}
+    for e in extras:
+        info = nights.get(night_of(e["t"], tz))
+        if info is not None:
+            for k, v in e.items():
+                if k != "t":
+                    info["extras"].setdefault(k, v)
+    for n, info in nights.items():
+        if "resp" not in info["extras"] and "start" in info and resp:
+            vals = [r for t, r in resp.items() if info["start"] <= t <= info["stop"]]
+            if vals:
+                info["extras"]["resp"] = sum(vals) / len(vals)
+    return nights
+
+
+def journal_note(info, tz):
+    """The note shown in OSCAR (HTML lines)."""
+    sc, ex, lines = info["scores"], info["extras"], []
+    first = []
+    if "start" in info:
+        first.append(f"{to_local(info['start'], tz):%H:%M}-{to_local(info['stop'], tz):%H:%M}")
+    if "overall" in sc:
+        first.append(f"score {sc['overall']}" + (f" (quality {sc['quality']})" if "quality" in sc else ""))
+    if "hrv" in ex:
+        hrv = f"HRV {ex['hrv']:.0f} ms"
+        details = [x for x in (ex.get("hrv_status"),
+                               f"weekly {ex['hrv_weekly']:.0f}" if "hrv_weekly" in ex else None) if x]
+        first.append(hrv + (f" ({', '.join(details)})" if details else ""))
+    if "rhr" in ex:
+        first.append(f"resting HR {ex['rhr']:.0f}")
+    if "skin_temp" in ex:
+        first.append(f"skin temp {ex['skin_temp']:+.1f} °C")
+    if first:
+        lines.append("Sleep: " + ", ".join(first))
+    if "stages" in info:
+        m = info["stages"]
+        parts = [f"deep {_dur(m['Deep'])}", f"light {_dur(m['Light'])}", f"REM {_dur(m['REM'])}",
+                 f"awake {_dur(m['WAKE'])}"]
+        if info.get("awakenings") is not None:
+            parts.append(f"{info['awakenings']} awakenings")
+        lines.append("Stages: " + ", ".join(parts))
+    rest = []
+    if "restless" in info:
+        rest.append(f"{info['restless']} restless moments")
+    if "restlessness" in sc:
+        rest.append(f"restlessness {_num(sc['restlessness'])}")
+    if "interruptions" in sc:
+        rest.append(f"interruptions {_num(sc['interruptions'])}")
+    if rest:
+        lines.append("Restlessness: " + ", ".join(rest))
+    if "spo2" in info:
+        o = info["spo2"]
+        lines.append(f"SpO2: avg {o['avg']:.1f} %, min {o['min']} % at {to_local(o['min_t'], tz):%H:%M}, "
+                     f"{o['below90']} min under 90 %")
+    vit = []
+    if "resp" in ex:
+        vit.append(f"breathing {ex['resp']:.1f}/min")
+    if "avg_hr" in ex:
+        vit.append(f"avg HR {ex['avg_hr']:.0f}")
+    if "stress" in ex or "stress" in sc:
+        vit.append(f"sleep stress {_num(ex.get('stress', sc.get('stress')))}")
+    if "body_battery" in ex:
+        vit.append(f"Body Battery {ex['body_battery']:+.0f}")
+    if vit:
+        lines.append("Vitals: " + ", ".join(vit))
+    if info.get("day_before"):
+        txt = day_before_text(info["day_before"])
+        if txt:
+            lines.append("Day before: " + txt)
+    if "breathing" in info:
+        b = info["breathing"]
+        mins = {"low": 0, "medium": 0, "high": 0}
+        for t0, t1, sev in b["periods"]:
+            if sev in mins:
+                mins[sev] += (t1 - t0) / 60
+        parts = [f"{k} {_dur(v)}" for k, v in mins.items() if v >= 1] or ["none"]
+        lines.append("Breathing disruptions: " + ", ".join(parts)
+                     + (f" (overall {b['overall']})" if b.get("overall") else ""))
+    if not lines:
+        return None
+    esc = lambda x: x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return "<p><b>Garmin</b><br/>" + "<br/>".join(esc(l) for l in lines) + "</p>"
+
+
+def journal_bookmarks(info, tz):
+    """Bookmarks: every breathing-disruption period and the lowest SpO2."""
+    ms = lambda t: (t + 631065600) * 1000
+    out = []
+    for t0, t1, sev in (info.get("breathing") or {}).get("periods", []):
+        if sev in ("low", "medium", "high"):
+            out.append((ms(t0), ms(t1), f"Garmin breathing disruptions: {sev}"))
+    if "spo2" in info:
+        t = info["spo2"]["min_t"]
+        out.append((ms(t - 300), ms(t + 300), f"Garmin lowest SpO2: {info['spo2']['min']} %"))
+    return sorted(out)
+
+
+def write_journal_xml(path, readings, stages, breathing, restless, extras, resp, tz,
+                      overwrite=False, log=print, days=None):
+    """OSCAR Journal backup file (OSCAR: restore/import Journal): one note and
+    bookmarks per night. Cumulative like the other files. OSCAR skips a note
+    it already has, and puts a different one above the existing text."""
+    import xml.etree.ElementTree as ET
+    infos = night_infos(readings, stages, breathing, restless, extras, resp, tz)
+    for n, info in infos.items():
+        if days and str(n) in days:
+            info["day_before"] = days[str(n)]
+    new_days = {}
+    for n, info in infos.items():
+        if "stages" not in info and "breathing" not in info:
+            continue        # night not finished yet (only the evening's SpO2): its note would change
+        note, bms = journal_note(info, tz), journal_bookmarks(info, tz)
+        if not note and not bms:
+            continue
+        day = ET.Element("day", {"date": str(n), "lastupdated": ""})
+        if note:
+            ET.SubElement(ET.SubElement(day, "note"), "text").text = note
+        if bms:
+            el = ET.SubElement(day, "bookmarks")
+            for a, b, txt in bms:
+                ET.SubElement(el, "bookmark", {"notes": txt, "start": str(a), "end": str(b)})
+        new_days[str(n)] = day
+    if not new_days:
+        return None
+    old_days = {}
+    if not overwrite and os.path.exists(path):
+        try:
+            old = ET.parse(path).getroot()
+            old_days = {d.get("date"): d for d in old.iter("day")}
+        except ET.ParseError:
+            os.replace(path, path + ".old")
+            log(f"   (unreadable file: the previous one was kept as {path}.old)")
+    added = len(set(new_days) - set(old_days))
+    updated = len(set(new_days) & set(old_days))
+    merged = {**old_days, **new_days}
+    root = ET.Element("OSCAR", {"created": dt.datetime.now().replace(microsecond=0).isoformat()})
+    journal = ET.SubElement(root, "Journal", {"username": "Garmin import"})
+    for n in sorted(merged):
+        journal.append(merged[n])
+    ET.indent(root, space="  ")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write(ET.tostring(root, encoding="utf-8"))
+        f.write(b"\n")
+    log(f"-> {path}: {added} night(s) added, {updated} updated, {len(merged)} in total")
+    return path
 
 
 def make_tz(name=None, offset_hours=None):
@@ -679,21 +1278,33 @@ def main():
                     help="don't write the sleep-stage file (Dreem format)")
     ap.add_argument("--no-breathing", action="store_true",
                     help="don't write the breathing-disruption .csv files")
-    ap.add_argument("--breathing-as-position", action="store_true",
-                    help="also write the breathing disruptions as a Somnopose file, shown "
-                         "by OSCAR as an Orientation graph (0 not measured, 10 none, "
-                         "20 low, 30 medium, 40 high)")
+    ap.add_argument("--somnopose", "--breathing-as-position", dest="somnopose", action="store_true",
+                    help="also write a Somnopose file: breathing disruptions as OSCAR's "
+                         "Orientation graph (0 not measured, 10 none, 20 low, 30 medium, "
+                         "40 high) and restless moments as its Inclination graph")
+    ap.add_argument("--no-summary", action="store_true",
+                    help="don't write garmin_nights_summary.csv")
+    ap.add_argument("--no-journal", dest="journal", action="store_false",
+                    help="don't write the OSCAR Journal file (notes and bookmarks per night)")
+    ap.add_argument("--journal", dest="journal", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--overwrite", action="store_true",
+                    help="start the cumulative files (summary, stages, breathing, Somnopose) "
+                         "from scratch instead of adding to them")
     a = ap.parse_args()
 
     readings, hr, _ = extract_many(a.fit)
     tz = make_tz(a.timezone, a.tz_offset)
-    sessions, breathing = [], []
+    sessions, breathing, extras, resp, daily = [], [], [], {}, {}
     for p in a.fit:
         try:
             sessions += extract_sleep(p)
             breathing += extract_disruptions(p)
+            extras += extract_extras(p)
+            resp.update(extract_respiration(p))
+            merge_daily(daily, extract_daily_activity(p, tz))
         except Exception:
             pass
+    days = daily_totals_from_fit(daily)
     if not readings and not sessions and not breathing:
         sys.exit("No SpO2 readings or sleep stages found (is SpO2 tracking enabled on the watch?)")
     if readings:
@@ -702,15 +1313,29 @@ def main():
         if not created:
             print("No SpO2 segment long enough (see --min-minutes).")
     if sessions and not a.no_stages:
-        write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"), sessions, tz)
+        write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"), sessions, tz,
+                        overwrite=a.overwrite)
         print("Sleep stages: in OSCAR, Import Dreem data and pick oscar_dreem/garmin_sleep_stages.csv")
     if breathing and not a.no_breathing:
-        write_breathing_csv(a.outdir, breathing, tz)
-    if breathing and a.breathing_as_position:
-        if write_somnopose_csv(os.path.join(a.outdir, "oscar_somnopose", "garmin_breathing_somnopose.csv"),
-                               breathing, tz):
+        write_breathing_csv(a.outdir, breathing, tz, overwrite=a.overwrite)
+    if breathing and a.somnopose:
+        if write_somnopose_csv(os.path.join(a.outdir, "oscar_somnopose", "garmin_somnopose.csv"),
+                               breathing, [], tz, overwrite=a.overwrite):
             print("Breathing disruptions: in OSCAR, Import Somnopose data and pick "
-                  "oscar_somnopose/garmin_breathing_somnopose.csv")
+                  "oscar_somnopose/garmin_somnopose.csv")
+    if a.journal:
+        if write_journal_xml(os.path.join(a.outdir, "oscar_journal", "garmin_journal.xml"), readings,
+                             sessions, breathing, [], extras, resp, tz, overwrite=a.overwrite,
+                             days=days):
+            print("In OSCAR: File > Backup Journal first. Then display a day that is NOT in this file\n"
+                  "  (e.g. before your first Garmin night) whose Notes box is NOT empty (type a\n"
+                  "  temporary 'x' if needed, remove it afterwards), then File > Import Journal.\n"
+                  "  OSCAR's import relies on the note box on screen: if it is empty, the notes\n"
+                  "  of the imported days are erased; if the day on screen is in the file, its\n"
+                  "  note is replaced.")
+    if not a.no_summary:
+        write_summary_csv(os.path.join(a.outdir, "garmin_nights_summary.csv"),
+                          readings, sessions, breathing, [], tz, overwrite=a.overwrite, days=days)
 
 
 if __name__ == "__main__":

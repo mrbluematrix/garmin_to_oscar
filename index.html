@@ -245,6 +245,12 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <div class="inline">
         <label><input type="checkbox" id="withCsv" checked> <span>Include a readable .csv for each night</span></label>
       </div>
+      <div class="inline">
+        <label><input type="checkbox" id="withSummary" checked> <span>Include a summary of every night <small>One row per night: Garmin’s sleep, restlessness and interruptions scores, awakenings, restless moments, stage minutes, SpO2 and breathing disruptions.</small></span></label>
+      </div>
+      <div class="inline">
+        <label><input type="checkbox" id="withJournal" checked> <span>Include an OSCAR Journal file <small>A note per night (scores, HRV, stages, SpO2, breathing…) and bookmarks on breathing disruptions and the lowest SpO2, for OSCAR’s Journal import.</small></span></label>
+      </div>
       <div class="inline" id="stagesOption">
         <label><input type="checkbox" id="withStages" checked> <span>Include sleep stages <small>Deep, light, REM and awake, as one file for “Import Dreem data”.</small></span></label>
       </div>
@@ -252,7 +258,7 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
         <label><input type="checkbox" id="withBreathing" checked> <span>Include breathing disruptions <small>Two .csv files for a spreadsheet: a summary per night and every period. OSCAR can’t display them.</small></span></label>
       </div>
       <div class="inline hidden" id="breathingPosOption">
-        <label><input type="checkbox" id="breathingAsPosition"> <span>Also show breathing disruptions in OSCAR <small>A file for “Import Somnopose data”: OSCAR shows it as an “Orientation” graph (0 not measured, 10 none, 20 low, 30 medium, 40 high). Movement and oximetry are unchanged.</small></span></label>
+        <label><input type="checkbox" id="breathingAsPosition"> <span>Also show breathing disruptions and restless moments in OSCAR <small>A file for “Import Somnopose data”. Breathing disruptions become an “Orientation” graph (0 not measured, 10 none, 20 low, 30 medium, 40 high), restless moments an “Inclination” graph with one spike each. Movement and oximetry are unchanged.</small></span></label>
       </div>
       <div class="inline">
         <label for="fromDate">Only nights from</label>
@@ -284,7 +290,8 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <li>If you abandon an import halfway, restart OSCAR before the next one.</li>
     </ol>
     <p id="stagesStep" class="hidden">Sleep stages: in OSCAR, choose <b>Import Dreem data</b> and pick <b>garmin_sleep_stages.csv</b> in the <b>oscar_dreem</b> folder. Nights already imported are skipped, and OSCAR shows a sleep-stage graph.</p>
-    <p id="somnoStep" class="hidden">Breathing disruptions: in OSCAR, choose <b>Import Somnopose data</b> and pick <b>garmin_breathing_somnopose.csv</b> in the <b>oscar_somnopose</b> folder. They appear in the <b>Orientation</b> graph: 0 not measured, 10 none, 20 low, 30 medium, 40 high.</p>
+    <p id="somnoStep" class="hidden">Breathing disruptions and restless moments: in OSCAR, choose <b>Import Somnopose data</b> and pick <b>garmin_somnopose.csv</b> in the <b>oscar_somnopose</b> folder. Breathing disruptions appear in the <b>Orientation</b> graph (0 not measured, 10 none, 20 low, 30 medium, 40 high), restless moments in the <b>Inclination</b> graph.</p>
+    <p id="journalStep">Journal: OSCAR’s Journal import relies on the note box shown on screen, so follow these steps exactly. 1) <b>File → Backup Journal</b>. 2) Display a day that is <b>not</b> in <b>garmin_journal.xml</b> (for example before your first night with the watch) and whose <b>Notes box is not empty</b>: type a temporary “x” if needed. 3) <b>File → Import Journal</b> and pick <b>garmin_journal.xml</b> in the <b>oscar_journal</b> folder. 4) Remove the “x”, change day and check a couple of days. If the note box is empty during the import, OSCAR erases the notes of the imported days; if the day on screen is in the file, its note is replaced by the Garmin one.</p>
   </section>
 
   <footer>
@@ -426,6 +433,7 @@ const BASE = {
   0x83: [2, "s16", 0x7FFF], 0x84: [2, "u16", 0xFFFF], 0x85: [4, "s32", 0x7FFFFFFF],
   0x86: [4, "u32", 0xFFFFFFFF], 0x0A: [1, "u8", 0x00], 0x8B: [2, "u16", 0x0000],
   0x8C: [4, "u32", 0x00000000], 0x0D: [1, "u8", 0xFF],
+  0x88: [4, "f32", null], 0x89: [8, "f64", null],
 };
 function readValue(dv, pos, kind, little) {
   switch (kind) {
@@ -435,6 +443,8 @@ function readValue(dv, pos, kind, little) {
     case "s16": return dv.getInt16(pos, little);
     case "u32": return dv.getUint32(pos, little);
     case "s32": return dv.getInt32(pos, little);
+    case "f32": return dv.getFloat32(pos, little);
+    case "f64": return dv.getFloat64(pos, little);
   }
 }
 
@@ -456,7 +466,7 @@ function parseFit(buf, onMessage) {
       const b = BASE[type];
       if (b && b[0] === size && pos + size <= u8.length) {
         const v = readValue(dv, pos, b[1], d.little);
-        if (v !== b[2]) vals[num] = v;
+        if (b[2] === null ? !Number.isNaN(v) : v !== b[2]) vals[num] = v;
       }
       pos += size;
     }
@@ -550,15 +560,39 @@ function motionByte(movement, t) {
 /* ---------- sleep stages -> Dreem CSV (OSCAR: “Import Dreem data”) ---------- */
 const FIT_STAGES = { 0: "NA", 1: "WAKE", 2: "Light", 3: "Deep", 4: "REM" };
 const JSON_STAGES = { 0: "Deep", 1: "Light", 2: "REM", 3: "WAKE" };
+const FIT_SCORES = { overall: 6, quality: 7, restlessness: 10, interruptions: 14 };   // sleep_assessment
+const titleCase = (w) => String(w).toLowerCase().replace(/(^|_|\s)\w/g, (c) => c.toUpperCase());
+
+/** Restless moments from Garmin Connect sleep JSON ("sleepRestlessMoments"). */
+function extractRestlessJson(obj, out, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 5) return;
+  if (Array.isArray(obj)) { obj.forEach((o) => extractRestlessJson(o, out, depth + 1)); return; }
+  if (Array.isArray(obj.sleepRestlessMoments)) {
+    const moments = obj.sleepRestlessMoments.map((it) => gmtToFit(it && it.startGMT)).filter((t) => t !== null).sort((a, b) => a - b);
+    if (moments.length) {
+      const dto = obj.dailySleepDTO || {};
+      const st = gmtToFit(dto.sleepStartTimestampGMT) || moments[0];
+      const sp = gmtToFit(dto.sleepEndTimestampGMT) || moments[moments.length - 1];
+      out.push({ start: Math.min(st, moments[0]), stop: Math.max(sp, moments[moments.length - 1]), moments,
+        count: Number.isInteger(obj.restlessMomentsCount) ? obj.restlessMomentsCount : moments.length });
+    }
+  }
+  for (const k in obj) if (k !== "sleepRestlessMoments" && obj[k] && typeof obj[k] === "object") extractRestlessJson(obj[k], out, depth + 1);
+}
 
 /** SLEEP_DATA .fit: each sleep_level message closes the interval begun at the previous one. */
 function extractSleepFit(buf) {
   const starts = [], stops = [], levels = [];
   let awakenings = null;
+  const scores = {};
   parseFit(buf, (g, v) => {
     if (g === 21 && v[0] === 74 && 253 in v) ((v[1] || 0) === 0 ? starts : stops).push(v[253]);
     else if (g === 275 && 253 in v && 0 in v) levels.push([v[253], v[0]]);
-    else if (g === 346 && 11 in v) awakenings = v[11];
+    else if (g === 346) {
+      if (11 in v) awakenings = v[11];
+      for (const [k, num] of Object.entries(FIT_SCORES)) if (num in v) scores[k] = v[num];
+      if (15 in v) scores.stress = v[15] / 100;
+    }
   });
   if (!levels.length) return [];
   levels.sort((a, b) => a[0] - b[0]);
@@ -570,7 +604,7 @@ function extractSleepFit(buf) {
     if (t > prev) intervals.push([prev, Math.min(t, stop), FIT_STAGES[lvl] || "NA"]);
     prev = Math.max(prev, t);
   }
-  return intervals.length ? [{ start, stop, intervals, awakenings }] : [];
+  return intervals.length ? [{ start, stop, intervals, awakenings, scores }] : [];
 }
 
 /** Garmin Connect sleep JSON: every object with a "sleepLevels" list. */
@@ -587,8 +621,12 @@ function extractSleepJson(obj, out, depth = 0) {
     if (intervals.length) {
       intervals.sort((a, b) => a[0] - b[0]);
       const dto = obj.dailySleepDTO || {};
+      const sc = dto.sleepScores || {}, scores = {};
+      if (sc.overall && typeof sc.overall.value === "number") scores.overall = sc.overall.value;
+      if (sc.restlessness && sc.restlessness.qualifierKey) scores.restlessness = titleCase(sc.restlessness.qualifierKey);
+      if (sc.awakeCount && sc.awakeCount.qualifierKey) scores.interruptions = titleCase(sc.awakeCount.qualifierKey);
       out.push({ start: intervals[0][0], stop: intervals[intervals.length - 1][1], intervals,
-        awakenings: typeof dto.awakeCount === "number" ? dto.awakeCount : null, fromJson: true });
+        awakenings: typeof dto.awakeCount === "number" ? dto.awakeCount : null, scores, fromJson: true });
     }
   }
   for (const k in obj) if (k !== "sleepLevels" && obj[k] && typeof obj[k] === "object") extractSleepJson(obj[k], out, depth + 1);
@@ -734,23 +772,309 @@ function writeBreathing(list) {
 const SOMNO_VALUE = { "not measured": 0, none: 10, low: 20, medium: 30, high: 40 };
 const SOMNO_EPOCH = 978307200 - FIT_TO_UNIX;      // 2001-01-01 UTC in FIT seconds
 /** Breathing disruptions as a Somnopose file: OSCAR shows the Orientation column as its own graph. */
-function writeSomnopose(list) {
-  const lines = ["Timestamp,Orientation"];
-  for (const s of list) {
-    let periods = s.periods;
-    const [y, m, d] = eveningOfKey(s.key);
-    if (dayLengthHours(y, m, d) !== 24) {           // DST evening: start at midnight, as for the oximetry
-      const midnight = Math.round(new Date(y, m, d + 1).getTime() / 1000) - FIT_TO_UNIX;
-      if (s.start < midnight) periods = periods.filter((p) => p[1] > midnight).map((p) => [Math.max(p[0], midnight), p[1], p[2]]);
+/** Orientation = breathing disruptions, Inclination = restless moments (spikes); one session per night. */
+function writeSomnopose(breathing, restless) {
+  const br = new Map(breathing.map((s) => [s.key, s])), rs = new Map(restless.map((s) => [s.key, s]));
+  const keys = [...new Set([...br.keys(), ...rs.keys()])].sort();
+  const lines = ["Timestamp,Orientation,Inclination"];
+  for (const key of keys) {
+    const b = br.get(key), r = rs.get(key), parts = [b, r].filter(Boolean);
+    let start = Math.min(...parts.map((x) => x.start));
+    const stop = Math.max(...parts.map((x) => x.stop));
+    const [y, m, d] = eveningOfKey(key);
+    const midnight = Math.round(new Date(y, m, d + 1).getTime() / 1000) - FIT_TO_UNIX;
+    let cut = null;
+    if (dayLengthHours(y, m, d) !== 24 && start < midnight) { cut = midnight; start = Math.max(start, midnight); }
+    const rows = [];                                   // [time, order, line]
+    if (b) {
+      for (let [t0, t1, sev] of b.periods) {
+        if (cut !== null) { if (t1 <= cut) continue; t0 = Math.max(t0, cut); }
+        const v = SOMNO_VALUE[sev] || 0;
+        rows.push([t0, 2, `${t0 - SOMNO_EPOCH},${v},`], [t1, 0, `${t1 - SOMNO_EPOCH},${v},`]);
+      }
     }
-    if (!periods.length) continue;
-    for (const [t0, t1, sev] of periods) {
-      const v = SOMNO_VALUE[sev] || 0;
-      lines.push(`${t0 - SOMNO_EPOCH},${v}`, `${t1 - SOMNO_EPOCH},${v}`);
+    if (r) {
+      const pts = [[start, 0], ...r.moments.filter((t) => t >= start).map((t) => [t, 1]), [stop, 0]];
+      for (const [t, v] of pts) {
+        if (v) rows.push([t - 30, 1, `${t - 30 - SOMNO_EPOCH},,0`], [t, 1, `${t - SOMNO_EPOCH},,1`], [t + 30, 1, `${t + 30 - SOMNO_EPOCH},,0`]);
+        else rows.push([t, 1, `${t - SOMNO_EPOCH},,0`]);
+      }
     }
-    lines.push("-");
+    if (!rows.length) continue;
+    rows.sort((a, c) => a[0] - c[0] || a[1] - c[1]);
+    lines.push(...rows.map((x) => x[2]), "-");
   }
-  return { name: "oscar_somnopose/garmin_breathing_somnopose.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") };
+  return { name: "oscar_somnopose/garmin_somnopose.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") };
+}
+
+function buildRestless(list) {
+  const byKey = new Map();
+  for (const s of [...list].sort((a, b) => a.start - b.start)) {
+    const key = dateKey(...eveningOf(s.start));
+    if (!byKey.has(key)) byKey.set(key, { ...s, key });
+  }
+  return [...byKey.values()];
+}
+
+/* ---------- OSCAR Journal (notes and bookmarks) ---------- */
+const HRV_STATUS = { 0: "none", 1: "poor", 2: "low", 3: "unbalanced", 4: "balanced" };
+
+/** HRV_STATUS / SKIN_TEMP .fit: values stamped at wake-up. */
+function extractExtrasFit(buf, out) {
+  parseFit(buf, (g, v) => {
+    if (g === 370 && 253 in v) {
+      const e = { t: v[253] };
+      if (1 in v) e.hrv = v[1] / 128;
+      if (0 in v) e.hrv_weekly = v[0] / 128;
+      if (6 in v) e.hrv_status = HRV_STATUS[v[6]];
+      out.push(e);
+    } else if (g === 398 && 253 in v && 1 in v) {
+      out.push({ t: v[253], skin_temp: v[1] });
+    }
+  });
+}
+function extractRespirationFit(buf, resp) {
+  parseFit(buf, (g, v) => { if (g === 297 && 253 in v && 0 in v && v[0] > 0) resp.set(v[253], v[0] / 100); });
+}
+/** Garmin Connect sleep JSON: objects with a dailySleepDTO. */
+function extractExtrasJson(obj, out, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 5) return;
+  if (Array.isArray(obj)) { obj.forEach((o) => extractExtrasJson(o, out, depth + 1)); return; }
+  if (obj.dailySleepDTO && typeof obj.dailySleepDTO === "object") {
+    const dto = obj.dailySleepDTO;
+    const t = gmtToFit(dto.sleepEndTimestampGMT) || gmtToFit(dto.sleepStartTimestampGMT);
+    if (t !== null) {
+      const e = { t };
+      const pairs = [["hrv", obj.avgOvernightHrv], ["rhr", obj.restingHeartRate], ["skin_temp", obj.avgSkinTempDeviationC],
+        ["resp", dto.averageRespirationValue], ["body_battery", obj.bodyBatteryChange], ["stress", dto.avgSleepStress], ["avg_hr", dto.avgHeartRate]];
+      for (const [k, v] of pairs) if (typeof v === "number") e[k] = v;
+      if (typeof obj.hrvStatus === "string") e.hrv_status = obj.hrvStatus.toLowerCase();
+      out.push(e);
+    }
+  }
+  for (const k in obj) if (k !== "dailySleepDTO" && obj[k] && typeof obj[k] === "object") extractExtrasJson(obj[k], out, depth + 1);
+}
+
+/** Python-style rounding (half to even), so the notes match the Python scripts. */
+function pyFixed(v, d) {
+  const f = 10 ** d, x = v * f, r = Math.round(x);
+  const even = Math.abs(x % 1) === 0.5 && r % 2 !== 0 ? r - Math.sign(x) : r;
+  return (even / f).toFixed(d);
+}
+const signed = (v, d) => (v >= 0 ? "+" : "") + pyFixed(v, d);
+function durTxt(minutes) {
+  const m = Number(pyFixed(minutes, 0));
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${pad(m % 60)}`;
+}
+const numTxt = (v) => (typeof v === "number" ? pyFixed(v, 0) : String(v));
+
+/* ---------- activity of the day before each night (WELLNESS running totals) ---------- */
+const STEP_TYPES = new Set([0, 1, 6]);   // generic, running, walking: cycles are steps
+function extractDailyActivity(buf, daily) {
+  let monTs = null;
+  parseFit(buf, (g, v) => {
+    if (g !== 55) return;
+    if (253 in v && !(26 in v)) monTs = v[253];
+    let t = 253 in v ? v[253] : null;
+    if (26 in v && monTs !== null) { monTs = monTs + ((v[26] - monTs) & 0xFFFF); t = monTs; }
+    if (t === null) return;
+    const atype = 5 in v ? v[5] : (24 in v ? v[24] & 0x1F : null);
+    if (atype === null) return;
+    const dd = fitToDate(t - 1);                         // a midnight stamp closes the previous day
+    const day = dateKey(dd.getFullYear(), dd.getMonth(), dd.getDate());
+    if (!daily.has(day)) daily.set(day, { types: new Map(), complete: false });
+    const d = daily.get(day);
+    if (v[29] === 1440) d.complete = true;
+    if (!d.types.has(atype)) d.types.set(atype, {});
+    const tot = d.types.get(atype);
+    for (const [field, key, scale] of [[3, "cycles", 1], [2, "distance", 100], [4, "active_time", 1000], [19, "active_kcal", 1]]) {
+      if (field in v) tot[key] = Math.max(tot[key] || 0, v[field] / scale);
+    }
+  });
+}
+function dailyTotals(daily) {
+  const out = {};
+  for (const [day, d] of daily) {
+    if (!d.complete) continue;
+    let steps = 0, dist = 0, act = 0, kcal = 0;
+    for (const [a, t] of d.types) {
+      if (STEP_TYPES.has(a)) steps += t.cycles || 0;
+      dist += t.distance || 0; act += t.active_time || 0; kcal += t.active_kcal || 0;
+    }
+    out[day] = { steps: Math.trunc(steps), distance_km: dist / 1000, active_min: act / 60, active_kcal: kcal };
+  }
+  return out;
+}
+function dayBeforeText(d) {
+  const p = [];
+  if ("steps" in d) p.push(`${d.steps.toLocaleString("en-US")} steps`);
+  if (d.distance_km) p.push(`${pyFixed(d.distance_km, 1)} km`);
+  if (d.active_min) p.push(`${durTxt(d.active_min)} active`);
+  if (d.active_kcal) p.push(`${pyFixed(d.active_kcal, 0)} active kcal`);
+  return p.join(", ");
+}
+function dayBeforeCells(d) {
+  if (!d) return ["", "", "", "", "", ""];
+  return ["steps" in d ? String(d.steps) : "", "distance_km" in d ? pyFixed(d.distance_km, 2) : "",
+    "active_min" in d ? pyFixed(d.active_min, 0) : "", "active_kcal" in d ? pyFixed(d.active_kcal, 0) : "", "", ""];
+}
+
+function nightInfos(readings, sleepRaw, breathing, restless, extras, resp) {
+  const nights = new Map();
+  const get = (k) => { if (!nights.has(k)) nights.set(k, { scores: {}, extras: {} }); return nights.get(k); };
+  const sorted = [...sleepRaw].sort((a, b) => a.start - b.start || ("quality" in (a.scores || {}) ? 0 : 1) - ("quality" in (b.scores || {}) ? 0 : 1));
+  for (const s of sorted) {
+    const info = get(dateKey(...eveningOf(s.start)));
+    if (!info.stages) {
+      info.start = s.start; info.stop = s.stop;
+      const m = { Deep: 0, Light: 0, REM: 0, WAKE: 0 };
+      for (const [t0, t1, st] of s.intervals) if (st in m) m[st] += (t1 - t0) / 60;
+      info.stages = m; info.awakenings = s.awakenings;
+    }
+    for (const [k, v] of Object.entries(s.scores || {})) if (typeof info.scores[k] !== "number") info.scores[k] = v;
+  }
+  for (const b of breathing) { const info = get(b.key); info.breathing = b; if (info.start === undefined) { info.start = b.start; info.stop = b.stop; } }
+  for (const r of restless) { const info = get(r.key); info.restless = r.count; if (info.start === undefined) { info.start = r.start; info.stop = r.stop; } }
+  const byNight = new Map();
+  for (const [t, v] of readings) { const k = dateKey(...eveningOf(t)); if (!byNight.has(k)) byNight.set(k, []); byNight.get(k).push([t, v]); }
+  for (const [k, rs] of byNight) {
+    if (rs.length < 30) continue;
+    const vals = rs.map((x) => x[1]);
+    let low = rs[0];
+    for (const x of rs) if (x[1] < low[1] || (x[1] === low[1] && x[0] < low[0])) low = x;
+    get(k).spo2 = { avg: vals.reduce((a, c) => a + c, 0) / vals.length, min: low[1], min_t: low[0], below90: vals.filter((v) => v < 90).length };
+  }
+  for (const e of extras) {
+    const info = nights.get(dateKey(...eveningOf(e.t)));
+    if (info) for (const [k, v] of Object.entries(e)) if (k !== "t" && !(k in info.extras)) info.extras[k] = v;
+  }
+  for (const info of nights.values()) {
+    if (!("resp" in info.extras) && info.start !== undefined && resp.size) {
+      const vals = [];
+      for (const [t, r] of resp) if (t >= info.start && t <= info.stop) vals.push(r);
+      if (vals.length) info.extras.resp = vals.reduce((a, c) => a + c, 0) / vals.length;
+    }
+  }
+  return nights;
+}
+
+function journalNote(info) {
+  const sc = info.scores, ex = info.extras, lines = [], first = [];
+  if (info.start !== undefined) first.push(`${hhmm(fitToDate(info.start))}-${hhmm(fitToDate(info.stop))}`);
+  if ("overall" in sc) first.push(`score ${sc.overall}` + ("quality" in sc ? ` (quality ${sc.quality})` : ""));
+  if ("hrv" in ex) {
+    const det = [ex.hrv_status, "hrv_weekly" in ex ? `weekly ${pyFixed(ex.hrv_weekly, 0)}` : null].filter(Boolean);
+    first.push(`HRV ${pyFixed(ex.hrv, 0)} ms` + (det.length ? ` (${det.join(", ")})` : ""));
+  }
+  if ("rhr" in ex) first.push(`resting HR ${pyFixed(ex.rhr, 0)}`);
+  if ("skin_temp" in ex) first.push(`skin temp ${signed(ex.skin_temp, 1)} °C`);
+  if (first.length) lines.push("Sleep: " + first.join(", "));
+  if (info.stages) {
+    const m = info.stages, p = [`deep ${durTxt(m.Deep)}`, `light ${durTxt(m.Light)}`, `REM ${durTxt(m.REM)}`, `awake ${durTxt(m.WAKE)}`];
+    if (info.awakenings !== null && info.awakenings !== undefined) p.push(`${info.awakenings} awakenings`);
+    lines.push("Stages: " + p.join(", "));
+  }
+  const rest = [];
+  if (info.restless !== undefined) rest.push(`${info.restless} restless moments`);
+  if ("restlessness" in sc) rest.push(`restlessness ${numTxt(sc.restlessness)}`);
+  if ("interruptions" in sc) rest.push(`interruptions ${numTxt(sc.interruptions)}`);
+  if (rest.length) lines.push("Restlessness: " + rest.join(", "));
+  if (info.spo2) {
+    const o = info.spo2;
+    lines.push(`SpO2: avg ${pyFixed(o.avg, 1)} %, min ${o.min} % at ${hhmm(fitToDate(o.min_t))}, ${o.below90} min under 90 %`);
+  }
+  const vit = [];
+  if ("resp" in ex) vit.push(`breathing ${pyFixed(ex.resp, 1)}/min`);
+  if ("avg_hr" in ex) vit.push(`avg HR ${pyFixed(ex.avg_hr, 0)}`);
+  if ("stress" in ex || "stress" in sc) vit.push(`sleep stress ${numTxt("stress" in ex ? ex.stress : sc.stress)}`);
+  if ("body_battery" in ex) vit.push(`Body Battery ${signed(ex.body_battery, 0)}`);
+  if (vit.length) lines.push("Vitals: " + vit.join(", "));
+  if (info.day_before) { const txt = dayBeforeText(info.day_before); if (txt) lines.push("Day before: " + txt); }
+  if (info.breathing) {
+    const b = info.breathing, mins = { low: 0, medium: 0, high: 0 };
+    for (const [t0, t1, sev] of b.periods) if (sev in mins) mins[sev] += (t1 - t0) / 60;
+    const parts = Object.entries(mins).filter(([, v]) => v >= 1).map(([k, v]) => `${k} ${durTxt(v)}`);
+    lines.push("Breathing disruptions: " + (parts.length ? parts.join(", ") : "none") + (b.overall ? ` (overall ${b.overall})` : ""));
+  }
+  if (!lines.length) return null;
+  const esc = (x) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return "<p><b>Garmin</b><br/>" + lines.map(esc).join("<br/>") + "</p>";
+}
+
+function journalBookmarks(info) {
+  const ms = (t) => (t + FIT_TO_UNIX) * 1000, out = [];
+  if (info.breathing) for (const [t0, t1, sev] of info.breathing.periods) {
+    if (sev === "low" || sev === "medium" || sev === "high") out.push([ms(t0), ms(t1), `Garmin breathing disruptions: ${sev}`]);
+  }
+  if (info.spo2) out.push([ms(info.spo2.min_t - 300), ms(info.spo2.min_t + 300), `Garmin lowest SpO2: ${info.spo2.min} %`]);
+  return out.sort((a, b) => a[0] - b[0] || a[1] - b[1] || (a[2] < b[2] ? -1 : 1));
+}
+
+function writeJournal(readings, sleepRaw, breathing, restless, extras, resp, from, dayData = {}) {
+  const xa = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const infos = nightInfos(readings, sleepRaw, breathing, restless, extras, resp);
+  for (const [k, info] of infos) if (dayData[k]) info.day_before = dayData[k];
+  const days = [];
+  for (const k of [...infos.keys()].sort()) {
+    const info = infos.get(k);
+    if (from && k < from) continue;
+    if (!info.stages && !info.breathing) continue;          // night not finished yet
+    const note = journalNote(info), bms = journalBookmarks(info);
+    if (!note && !bms.length) continue;
+    let x = `    <day date="${k}" lastupdated="">\n`;
+    if (note) x += `      <note>\n        <text>${xa(note).replace(/&quot;/g, '"')}</text>\n      </note>\n`;
+    if (bms.length) {
+      x += "      <bookmarks>\n";
+      for (const [a, b, t] of bms) x += `        <bookmark notes="${xa(t)}" start="${a}" end="${b}" />\n`;
+      x += "      </bookmarks>\n";
+    }
+    days.push(x + "    </day>\n");
+  }
+  if (!days.length) return null;
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<OSCAR created="${isoLocal(new Date()).replace(" ", "T")}">\n  <Journal username="Garmin import">\n${days.join("")}  </Journal>\n</OSCAR>\n`;
+  return { name: "oscar_journal/garmin_journal.xml", data: new TextEncoder().encode(xml) };
+}
+
+/** One row per night: what OSCAR can’t show. Scores from .fit (numbers) win over Garmin Connect ratings. */
+function writeSummary(readings, sleepRaw, breathing, restless, from, days = {}) {
+  const st = new Map();
+  const sorted = [...sleepRaw].sort((a, b) => a.start - b.start || ("quality" in (a.scores || {}) ? 0 : 1) - ("quality" in (b.scores || {}) ? 0 : 1));
+  for (const s of sorted) {
+    const key = dateKey(...eveningOf(s.start));
+    const cur = st.get(key);
+    if (!cur) st.set(key, { ...s, scores: { ...(s.scores || {}) } });
+    else for (const [k, v] of Object.entries(s.scores || {})) if (typeof cur.scores[k] !== "number") cur.scores[k] = v;
+  }
+  const br = new Map(breathing.map((s) => [s.key, s])), rs = new Map(restless.map((s) => [s.key, s]));
+  const ox = new Map();
+  for (const [t, v] of readings) {
+    const key = dateKey(...eveningOf(t));
+    if (!ox.has(key)) ox.set(key, []);
+    ox.get(key).push(v);
+  }
+  for (const [k, v] of ox) if (v.length < 30) ox.delete(k);
+  const keys = [...new Set([...st.keys(), ...br.keys(), ...rs.keys(), ...ox.keys()])].filter((k) => !from || k >= from).sort();
+  const lines = ["Night,Sleep start,Sleep end,Sleep score,Sleep quality,Restlessness,Interruptions,Awakenings,Restless moments,Deep (min),Light (min),REM (min),Awake (min),SpO2 avg,SpO2 min,SpO2 under 90% (min),Breathing overall,Breathing low (min),Breathing medium (min),Breathing high (min),Steps (day before),Distance km (day before),Active min (day before),Active kcal (day before),Intensity min (day before),Activities (day before)"];
+  const s0 = (v) => (v === undefined || v === null ? "" : String(v));
+  for (const k of keys) {
+    const s = st.get(k), b = br.get(k), r = rs.get(k), o = ox.get(k);
+    const src = s || b || r, sc = (s && s.scores) || {};
+    const mins = { Deep: 0, Light: 0, REM: 0, WAKE: 0 };
+    if (s) for (const [t0, t1, stg] of s.intervals) if (stg in mins) mins[stg] += (t1 - t0) / 60;
+    const bm = { low: 0, medium: 0, high: 0 };
+    if (b) for (const [t0, t1, sev] of b.periods) if (sev in bm) bm[sev] += (t1 - t0) / 60;
+    const cells = [k, src ? isoLocal(fitToDate(src.start)).slice(0, 16) : "", src ? isoLocal(fitToDate(src.stop)).slice(0, 16) : "",
+      s0(sc.overall), s0(sc.quality), s0(sc.restlessness), s0(sc.interruptions),
+      s && s.awakenings !== null && s.awakenings !== undefined ? String(s.awakenings) : "", r ? String(r.count) : ""];
+    for (const x of ["Deep", "Light", "REM", "WAKE"]) cells.push(s ? mins[x].toFixed(0) : "");
+    if (o) cells.push((o.reduce((a, c) => a + c, 0) / o.length).toFixed(1), String(Math.min(...o)), String(o.filter((v) => v < 90).length));
+    else cells.push("", "", "");
+    if (b) cells.push(b.overall || "", ...["low", "medium", "high"].map((x) => bm[x].toFixed(0)));
+    else cells.push("", "", "", "");
+    cells.push(...dayBeforeCells(days[k]));
+    lines.push(cells.join(","));
+  }
+  return keys.length ? { name: "garmin_nights_summary.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") } : null;
 }
 
 /* ---------- nights ---------- */
@@ -1017,6 +1341,8 @@ function renderNights() {
       const parts = ["low", "medium", "high"].filter((k) => brN.mins[k] >= 1).map((k) => `${k} ${brN.mins[k].toFixed(0)} min`);
       extras.push("breathing disruptions " + (parts.length ? parts.join(", ") : "none"));
     }
+    const rsN = (state.restless || []).find((x) => x.key === n.key);
+    if (rsN) extras.push(`${rsN.count} restless moments`);
     stats.innerHTML = `avg <b>${n.avg.toFixed(1)}%</b>, min <b>${n.min}%</b>, <b>${n.below90}</b> min under 90%`
       + (extras.length ? `, with ${extras.join(" and ")}` : "");
     left.append(h3, when, stats);
@@ -1049,8 +1375,9 @@ function renderNights() {
   $("downloadBtn").disabled = !sel.length && !st.length && !bs.length;
   $("breathingOption").classList.toggle("hidden", !state.breathing.length);
   $("breathingLegend").classList.toggle("hidden", !state.breathing.length);
-  $("breathingPosOption").classList.toggle("hidden", !state.breathing.length);
-  $("somnoStep").classList.toggle("hidden", !(state.breathing.length && $("breathingAsPosition").checked));
+  const somnoData = state.breathing.length || state.restless.length;
+  $("breathingPosOption").classList.toggle("hidden", !somnoData);
+  $("somnoStep").classList.toggle("hidden", !(somnoData && $("breathingAsPosition").checked));
   $("stagesOption").classList.toggle("hidden", !state.stages.length);
   $("stagesStep").classList.toggle("hidden", !st.length);
   $("stepsViatom").classList.toggle("hidden", fmt !== "viatom");
@@ -1095,7 +1422,7 @@ async function handleFiles(fileList) {
   if (!files.length) return;
   $("results").classList.add("hidden");
   $("downloadStatus").textContent = "";
-  state.nights = []; state.stages = []; state.breathing = []; state.showAll = false;
+  state.nights = []; state.stages = []; state.breathing = []; state.restless = []; state.sleepRaw = []; state.readings = []; state.showAll = false;
   try {
     const fits = [];
     for (const f of files) {
@@ -1105,13 +1432,16 @@ async function handleFiles(fileList) {
       else if (lower.endsWith(".zip")) await collectFitFiles(f, f.name, fits, 0);
     }
     state.movement = new Map();
-    const sleepSessions = [], breathingSessions = [];
+    const sleepSessions = [], breathingSessions = [], restlessSessions = [], extrasList = [];
+    const respMap = new Map(), dailyMap = new Map();
     for (const j of fits.filter((x) => x.json)) {
       try {
         const obj = JSON.parse(new TextDecoder().decode(await j.read()));
         extractMovement(obj, state.movement);
         extractSleepJson(obj, sleepSessions);
         extractBreathingJson(obj, breathingSessions);
+        extractRestlessJson(obj, restlessSessions);
+        extractExtrasJson(obj, extrasList);
       } catch (err) { /* not JSON */ }
     }
     fits.splice(0, fits.length, ...fits.filter((x) => !x.json));
@@ -1120,7 +1450,7 @@ async function handleFiles(fileList) {
       return;
     }
     const wellness = fits.filter((f) => /wellness/i.test(f.name));
-    const sleepFits = fits.filter((f) => /sleep_data|sleep_disruptions/i.test(f.name));
+    const sleepFits = fits.filter((f) => /sleep_data|sleep_disruptions|hrv_status|skin_temp/i.test(f.name));
     const todo = wellness.length ? [...wellness, ...sleepFits] : fits;
     const spo2 = new Map(), hr = new Map();
     let read = 0;
@@ -1130,6 +1460,8 @@ async function handleFiles(fileList) {
         if (!wellness.length || /wellness/i.test(f.name)) extractFit(buf, spo2, hr);
         if (!wellness.length || /sleep_data/i.test(f.name)) sleepSessions.push(...extractSleepFit(buf));
         if (!wellness.length || /sleep_disruptions/i.test(f.name)) breathingSessions.push(...extractDisruptionsFit(buf));
+        if (!wellness.length || /hrv_status|skin_temp/i.test(f.name)) extractExtrasFit(buf, extrasList);
+        if (!wellness.length || /wellness/i.test(f.name)) { extractRespirationFit(buf, respMap); extractDailyActivity(buf, dailyMap); }
       } catch (err) { /* skip unreadable file */ }
       read++;
       if (read % 5 === 0 || read === todo.length) {
@@ -1143,6 +1475,12 @@ async function handleFiles(fileList) {
     state.nights = built.nights; state.hr = hr; state.hrTimes = built.hrTimes;
     state.stages = buildStages(sleepSessions);
     state.breathing = buildBreathing(breathingSessions);
+    state.restless = buildRestless(restlessSessions);
+    state.sleepRaw = sleepSessions;
+    state.readings = [...spo2.values()];
+    state.extras = extrasList;
+    state.resp = respMap;
+    state.days = dailyTotals(dailyMap);
     if (!state.nights.length && !state.stages.length && !state.breathing.length) {
       setStatus(spo2.size
         ? "SpO2 readings were found, but no recording lasts 30 minutes or more."
@@ -1177,10 +1515,19 @@ async function download() {
   if (st.length) files.push(writeDreem(st));
   const bs = selectedBreathing();
   if (bs.length) files.push(...writeBreathing(bs));
-  if ($("breathingAsPosition").checked && state.breathing.length) {
-    const from = $("fromDate").value;
-    const list = state.breathing.filter((s) => !from || s.key >= from);
-    if (list.length) files.push(writeSomnopose(list));
+  const from = $("fromDate").value;
+  if ($("breathingAsPosition").checked && (state.breathing.length || state.restless.length)) {
+    const keep = (s) => !from || s.key >= from;
+    const b = state.breathing.filter(keep), r = state.restless.filter(keep);
+    if (b.length || r.length) files.push(writeSomnopose(b, r));
+  }
+  if ($("withJournal").checked) {
+    const j = writeJournal(state.readings, state.sleepRaw, state.breathing, state.restless, state.extras || [], state.resp || new Map(), from, state.days || {});
+    if (j) files.push(j);
+  }
+  if ($("withSummary").checked) {
+    const sum = writeSummary(state.readings, state.sleepRaw, state.breathing, state.restless, from, state.days || {});
+    if (sum) files.push(sum);
   }
   if (!files.length) return;
   const blob = makeZip(files);
@@ -1221,6 +1568,7 @@ document.querySelectorAll('input[name="format"]').forEach((r) => r.addEventListe
 $("fromDate").addEventListener("change", renderNights);
 $("withStages").addEventListener("change", renderNights);
 $("withBreathing").addEventListener("change", renderNights);
+$("withJournal").addEventListener("change", () => $("journalStep").classList.toggle("hidden", !$("withJournal").checked));
 $("breathingAsPosition").addEventListener("change", renderNights);
 $("clearDate").addEventListener("click", () => { $("fromDate").value = ""; renderNights(); });
 $("showAll").addEventListener("click", () => { state.showAll = !state.showAll; renderNights(); });

@@ -29,6 +29,22 @@ How it works:
      ./oscar_dreem/garmin_sleep_stages.csv, imported with "Import Dreem data".
   6. Writes Garmin's breathing disruptions into ./breathing/ (.csv files for a
      spreadsheet: OSCAR cannot display them).
+  7. Writes garmin_nights_summary.csv: one row per night with Garmin's sleep,
+     restlessness and interruptions scores, awakenings, restless moments,
+     stage minutes, SpO2 summary and breathing disruptions.
+  The files gathering several nights (summary, sleep stages, breathing,
+  Somnopose) are cumulative: each run adds its nights and updates the ones
+  it covers again, so running the script every day builds up a history
+  (--overwrite starts them from scratch). OSCAR skips nights it already has.
+  Also oscar_journal/garmin_journal.xml for OSCAR's File > Import Journal
+  (--no-journal to skip it): a note per night (scores, HRV, resting HR, stages, SpO2, breathing,
+  Body Battery...) and bookmarks on breathing disruptions and the lowest SpO2.
+  The note and the summary also give the activity of the day before each
+  night (steps, distance, active time, intensity minutes, activities...),
+  from Garmin Connect's daily summary or the WELLNESS .fit totals.
+  With --somnopose, also a file for OSCAR's "Import Somnopose data":
+  breathing disruptions as an Orientation graph, restless moments as an
+  Inclination graph.
   If the .fit download fails, the script falls back to the Garmin Connect
   SpO2 JSON API (sometimes at a lower resolution).
 
@@ -177,6 +193,32 @@ def fetch_sleep_json(api, wake_day, fit_dir, offline=False, log=print):
     return data
 
 
+def fetch_day_json(api, day, fit_dir, offline=False, log=print):
+    """Garmin Connect daily summary + activities of a day (cached as day.json)."""
+    path = os.path.join(fit_dir, day.isoformat(), "day.json")
+    recent = day >= dt.date.today() - dt.timedelta(days=1)
+    if os.path.exists(path) and (offline or not recent or api is None):
+        with open(path) as f:
+            return json.load(f)
+    if api is None or offline:
+        return None
+    data = {}
+    try:
+        data["stats"] = api.get_stats(day.isoformat()) or {}
+    except Exception as e:
+        log(f"Daily summary unavailable for {day:%Y-%m-%d} ({e}).")
+    try:
+        data["activities"] = api.get_activities_by_date(day.isoformat(), day.isoformat()) or []
+    except Exception as e:
+        log(f"Activity list unavailable for {day:%Y-%m-%d} ({e}).")
+    if not data:
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f)
+    return data
+
+
 def movement_from_json(data):
     """Per-minute sleep movement: {fit_minute_start_utc: activity level}."""
     movement = {}
@@ -225,19 +267,49 @@ def process_night(api, night, a):
 
     # Sleep data (movement and stages) from Garmin Connect, cached as sleep.json
     sleep_json = None
-    if not (a.no_movement and a.no_stages and a.no_breathing and not a.breathing_as_position):
+    if not (a.no_movement and a.no_stages and a.no_breathing and not a.somnopose and a.no_summary):
         sleep_json = fetch_sleep_json(api, days[1], a.fit_dir, a.offline)
 
+    in_window = lambda sessions: [x for x in sessions if window[0] <= x["start"] < window[1]]
+    json_stages = in_window(f2o.sleep_from_json(sleep_json, to_fit_ts))
+    fit_stages = []
+    for p in paths:
+        try:
+            fit_stages += f2o.extract_sleep(p)
+        except Exception:
+            pass
+    fit_stages = in_window(fit_stages)
+    restless = in_window(f2o.restless_from_json(sleep_json, to_fit_ts))
+    extras, resp = f2o.extras_from_json(sleep_json, to_fit_ts), {}
+
+    # Activity of the day before the night (the evening's date): Garmin
+    # Connect's daily summary first, otherwise the WELLNESS .fit totals.
+    day_before = {}
+    if not a.no_day_before:
+        daily = {}
+        for p in paths:
+            try:
+                f2o.merge_daily(daily, f2o.extract_daily_activity(p, tz))
+            except Exception:
+                pass
+        fit_days = f2o.daily_totals_from_fit(daily)
+        if night.isoformat() in fit_days:
+            day_before[night.isoformat()] = fit_days[night.isoformat()]
+        day_json = fetch_day_json(api, night, a.fit_dir, a.offline)
+        if day_json:
+            jt = f2o.daily_totals_from_json(day_json.get("stats"), day_json.get("activities"))
+            if jt:
+                day_before[night.isoformat()] = jt
+    if a.journal:
+        for p in paths:
+            try:
+                extras += f2o.extract_extras(p)
+                resp.update(f2o.extract_respiration(p))
+            except Exception:
+                pass
     stages = []
     if not a.no_stages:
-        stages = f2o.sleep_from_json(sleep_json, to_fit_ts)
-        if not stages:                       # otherwise SLEEP_DATA .fit files
-            for p in paths:
-                try:
-                    stages += f2o.extract_sleep(p)
-                except Exception:
-                    pass
-        stages = [x for x in stages if window[0] <= x["start"] < window[1]]
+        stages = json_stages or fit_stages   # JSON first, otherwise SLEEP_DATA .fit files
         midnight = local_to_fit(days[1], 0, 0, tz)
         if (day_length_hours(night, tz) != 24 and not a.keep_dst_evening
                 and any(x["start"] < midnight for x in stages)):
@@ -247,16 +319,14 @@ def process_night(api, night, a):
         if stages:
             print("Sleep stages found.")
 
-    breathing = []
-    if not a.no_breathing or a.breathing_as_position:
-        breathing = f2o.disruptions_from_json(sleep_json, to_fit_ts)
-        if not breathing:                    # otherwise SLEEP_DISRUPTIONS .fit files
-            for p in paths:
-                try:
-                    breathing += f2o.extract_disruptions(p)
-                except Exception:
-                    pass
-        breathing = [x for x in breathing if window[0] <= x["start"] < window[1]]
+    breathing = f2o.disruptions_from_json(sleep_json, to_fit_ts)
+    if not breathing:                        # otherwise SLEEP_DISRUPTIONS .fit files
+        for p in paths:
+            try:
+                breathing += f2o.extract_disruptions(p)
+            except Exception:
+                pass
+    breathing = in_window(breathing)
 
     if (use_json or not readings) and api is not None and not a.offline:
         print("Falling back to the Garmin Connect SpO2 JSON API...")
@@ -269,9 +339,12 @@ def process_night(api, night, a):
                 print(f"  JSON API unavailable for {d:%Y-%m-%d} ({e})")
         readings = list({r[0]: r for r in readings if r[0] is not None}.values())
 
+    result = {"created": [], "stages": stages, "breathing": breathing, "restless": restless,
+              "all_stages": json_stages + fit_stages, "extras": extras, "resp": resp, "days": day_before,
+              "readings": [r for r in readings if window[0] <= r[0] < window[1]]}
     if not readings:
         print("No SpO2 readings for this night.")
-        return [], stages, breathing
+        return result
 
     # Same window as OSCAR's day split: noon to noon (local time)
     midnight = local_to_fit(days[1], 0, 0, tz)
@@ -302,7 +375,8 @@ def process_night(api, night, a):
                           fmt=a.format, movement=movement)
     if not created:
         print("No overnight recording long enough (see --min-minutes).")
-    return created, stages, breathing
+    result["created"] = created
+    return result
 
 
 def main():
@@ -335,21 +409,35 @@ def main():
                     help="don't write the sleep-stage file (Dreem format)")
     ap.add_argument("--no-breathing", action="store_true",
                     help="don't write the breathing-disruption .csv files")
-    ap.add_argument("--breathing-as-position", action="store_true",
-                    help="also write the breathing disruptions as a Somnopose file, shown "
-                         "by OSCAR as an Orientation graph (0 not measured, 10 none, "
-                         "20 low, 30 medium, 40 high)")
+    ap.add_argument("--somnopose", "--breathing-as-position", dest="somnopose", action="store_true",
+                    help="also write a Somnopose file: breathing disruptions as OSCAR's "
+                         "Orientation graph (0 not measured, 10 none, 20 low, 30 medium, "
+                         "40 high) and restless moments as its Inclination graph")
+    ap.add_argument("--no-summary", action="store_true",
+                    help="don't write garmin_nights_summary.csv")
+    ap.add_argument("--no-journal", dest="journal", action="store_false",
+                    help="don't write the OSCAR Journal file (notes and bookmarks per night)")
+    ap.add_argument("--journal", dest="journal", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--no-day-before", action="store_true",
+                    help="don't fetch the activity of the day before each night")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="start the cumulative files (summary, stages, breathing, Somnopose) "
+                         "from scratch instead of adding to them")
     ap.add_argument("--keep-dst-evening", action="store_true",
                     help="keep readings before midnight on DST-change nights")
     a = ap.parse_args()
 
     api = None if a.offline else login(a.tokenstore)
-    created, stages, breathing = [], [], []
+    res = {"created": [], "stages": [], "breathing": [], "restless": [], "all_stages": [], "readings": [],
+           "extras": [], "resp": {}, "days": {}}
     for i in range(a.nights - 1, -1, -1):
-        c, st, br = process_night(api, a.night - dt.timedelta(days=i), a)
-        created += c
-        stages += st
-        breathing += br
+        r = process_night(api, a.night - dt.timedelta(days=i), a)
+        for k in res:
+            if k in ("resp", "days"):
+                res[k].update(r[k])
+            else:
+                res[k] += r[k]
+    created, stages, breathing = res["created"], res["stages"], res["breathing"]
 
     if a.format == "md300":
         print(f"\n{len(created)} .dat file(s) ready for OSCAR"
@@ -362,22 +450,45 @@ def main():
         print("\nNo oximetry file created.")
     if stages:
         tz = f2o.make_tz(a.timezone, a.tz_offset)
-        path = f2o.write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"),
-                                   stages, tz, log=lambda m: None)
-        print(f"Sleep stages for {len(stages)} night(s) in {path}\n"
-              "In OSCAR: Import Dreem data and pick that file. Nights already imported are skipped.")
+        print()
+        f2o.write_dreem_csv(os.path.join(a.outdir, "oscar_dreem", "garmin_sleep_stages.csv"),
+                            stages, tz, overwrite=a.overwrite)
+        print("In OSCAR: Import Dreem data and pick that file. Nights already imported are skipped.")
     if breathing and not a.no_breathing:
         print()
-        f2o.write_breathing_csv(a.outdir, breathing, f2o.make_tz(a.timezone, a.tz_offset))
+        f2o.write_breathing_csv(a.outdir, breathing, f2o.make_tz(a.timezone, a.tz_offset),
+                                overwrite=a.overwrite)
         print("(Open these .csv files in a spreadsheet.)")
-    if breathing and a.breathing_as_position:
+    tz = f2o.make_tz(a.timezone, a.tz_offset)
+    if a.somnopose and (breathing or res["restless"]):
         print()
         path = f2o.write_somnopose_csv(
-            os.path.join(a.outdir, "oscar_somnopose", "garmin_breathing_somnopose.csv"),
-            breathing, f2o.make_tz(a.timezone, a.tz_offset), a.keep_dst_evening)
+            os.path.join(a.outdir, "oscar_somnopose", "garmin_somnopose.csv"),
+            breathing, res["restless"], tz, a.keep_dst_evening, overwrite=a.overwrite)
         if path:
-            print("In OSCAR: Import Somnopose data and pick that file. "
-                  "Nights already imported are skipped.")
+            print("In OSCAR: Import Somnopose data and pick that file. Nights already imported "
+                  "are skipped.\n  Orientation graph = breathing disruptions "
+                  "(0 not measured, 10 none, 20 low, 30 medium, 40 high)\n"
+                  "  Inclination graph = restless moments (one spike each)")
+    if a.journal:
+        print()
+        if f2o.write_journal_xml(os.path.join(a.outdir, "oscar_journal", "garmin_journal.xml"),
+                                 res["readings"], res["all_stages"], breathing, res["restless"],
+                                 res["extras"], res["resp"], tz, overwrite=a.overwrite,
+                                 days=res["days"]):
+            print("In OSCAR: File > Backup Journal first. Then display a day that is NOT in this file\n"
+                  "  (e.g. before your first Garmin night) whose Notes box is NOT empty (type a\n"
+                  "  temporary 'x' if needed, remove it afterwards), then File > Import Journal.\n"
+                  "  OSCAR's import relies on the note box on screen: if it is empty, the notes\n"
+                  "  of the imported days are erased; if the day on screen is in the file, its\n"
+                  "  note is replaced.")
+    if not a.no_summary:
+        print()
+        f2o.write_summary_csv(os.path.join(a.outdir, "garmin_nights_summary.csv"), res["readings"],
+                              res["all_stages"], breathing, res["restless"], tz,
+                              overwrite=a.overwrite, days=res["days"])
+        print("(One row per night: Garmin scores, awakenings, restless moments, stages, SpO2 "
+              "and breathing. Open it in a spreadsheet.)")
 
 
 if __name__ == "__main__":
