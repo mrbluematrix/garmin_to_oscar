@@ -12,7 +12,8 @@ done.
 # garmin2oscar
 <img width="1776" height="1088" alt="Capture d’écran 2026-10-27 à 12 23 31" src="https://github.com/user-attachments/assets/8b202fea-2efe-4633-9a9b-4627cb522015" />
 
-<img width="802" height="364" alt="journal" src="https://github.com/user-attachments/assets/43b01209-f9ea-49be-bdfe-d5fc3a1d0025" />
+<img width="930" height="396" alt="Capture d’écran 2026-10-27 à 20 59 11" src="https://github.com/user-attachments/assets/a914ecf6-1243-4b45-86c8-4d6099a27bf5" />
+
 
 
 # garmin2oscar
