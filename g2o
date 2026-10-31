@@ -1,0 +1,11 @@
+#!/bin/bash
+# g2o - short command for garmin2oscar_spo2.py, with this folder's Python environment.
+#   ./g2o                   last night
+#   ./g2o --nights 7        the last 7 nights
+#   ./g2o --airsense        ... with the AirSense 11 clock correction
+cd "$(dirname "$0")"
+if [ ! -x .venv/bin/python ]; then
+  echo "Run ./setup.sh first."
+  exit 1
+fi
+exec .venv/bin/python garmin2oscar_spo2.py "$@"

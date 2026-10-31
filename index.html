@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Garmin SpO2 for OSCAR</title>
+<title>Garmin for OSCAR</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
@@ -20,6 +20,7 @@
   --warn: #8A5D00;
   --warn-soft: #FBF0D6;
   --focus: #2449C9;
+  --move: #2e7d32;
   color-scheme: light;
   box-sizing: border-box;
   padding-top: env(safe-area-inset-top, 0px);
@@ -38,6 +39,7 @@
     --warn: #E9BE58;
     --warn-soft: #2B2412;
     --focus: #8AA5FF;
+    --move: #5cc46a;
     color-scheme: dark;
   }
 }
@@ -53,6 +55,7 @@
   --warn: #E9BE58;
   --warn-soft: #2B2412;
   --focus: #8AA5FF;
+  --move: #5cc46a;
   color-scheme: dark;
 }
 *, *::before, *::after { box-sizing: inherit; }
@@ -206,6 +209,54 @@ ol.steps li { margin-bottom: .6rem; }
 .fine { color: var(--muted); font-size: .92rem; }
 footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25rem; }
 
+
+/* ---------- mode switch and night viewer ---------- */
+.mode { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: 1.5rem; }
+.mode-opt { display: flex; gap: .6rem; align-items: flex-start; background: var(--surface); border: 1.5px solid var(--line);
+  border-radius: 12px; padding: .8rem 1rem; cursor: pointer; }
+.mode-opt:has(input:checked) { border-color: var(--spo2); background: var(--spo2-soft); }
+.mode-opt b { display: block; }
+.mode-opt small { color: var(--muted); }
+.view-only { display: none; }
+body.view-mode .view-only { display: block; }
+body.view-mode .convert-only { display: none !important; }
+body.view-mode .options > :not(#chestOption) { display: none; }
+body.view-mode .options.view-empty { display: none; }
+.night-picker { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .5rem 0 1rem; }
+.night-picker select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: .4rem .6rem; max-width: 100%; }
+.icon-btn { font: inherit; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+  padding: .35rem .75rem; cursor: pointer; }
+.icon-btn[disabled] { opacity: .4; cursor: default; }
+.note-box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: .9rem 1.1rem;
+  font-size: .95rem; line-height: 1.6; margin-bottom: 1.25rem; }
+.note-box p { margin: 0; max-width: none; }
+:root[data-theme="dark"] .note-box span[style], .dark-notes .note-box span[style] { filter: brightness(1.6); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .note-box span[style] { filter: brightness(1.6); } }
+.charts { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: .75rem 1rem .5rem; }
+.chart { display: grid; grid-template-columns: 6.5rem 1fr; gap: .5rem; align-items: stretch; margin-bottom: .45rem; }
+.chart-label { font-size: .82rem; color: var(--muted); display: flex; flex-direction: column; justify-content: space-between;
+  text-align: right; padding: 2px 0; }
+.chart-label b { color: var(--ink); font-weight: 700; }
+.chart svg { width: 100%; display: block; background: var(--bg); border-radius: 4px; }
+.chart svg .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chart svg .ref { stroke: var(--pulse); stroke-dasharray: 4 4; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .7; }
+.chart svg path.l { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.c-spo2 { stroke: var(--spo2); } .c-pulse { stroke: var(--pulse); } .c-move { stroke: var(--move); } .c-roll { stroke: var(--ink); }
+.st-WAKE { fill: var(--pulse); } .st-REM { fill: #b06ad8; } .st-Light { fill: var(--spo2); opacity: .55; } .st-Deep { fill: var(--spo2); }
+.br-low2 { fill: var(--warn); opacity: .35; } .br-medium2 { fill: var(--warn); opacity: .75; } .br-high2 { fill: var(--pulse); }
+.ev-micro { stroke: var(--warn); stroke-width: 1.5; vector-effect: non-scaling-stroke; } .ev-awake { fill: var(--pulse); opacity: .8; }
+.ev-restless { stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.pos-back { fill: #27ae60; } .pos-left { fill: #2e86de; } .pos-right { fill: #e67e22; } .pos-belly { fill: #8e44ad; } .pos-upright { fill: #95a5a6; }
+.time-axis { position: relative; height: 1.3rem; margin-left: 7rem; font-size: .78rem; color: var(--muted); }
+.time-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: .25rem .9rem; font-size: .8rem; color: var(--muted); margin: .25rem 0 .6rem 7rem; }
+.legend i { display: inline-block; width: .8em; height: .8em; border-radius: 2px; margin-right: .3em; vertical-align: -.05em; }
+@media (max-width: 34rem) {
+  .mode { grid-template-columns: 1fr; }
+  .chart { grid-template-columns: 4.5rem 1fr; }
+  .time-axis, .legend { margin-left: 5rem; }
+}
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
@@ -213,8 +264,15 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
 </head>
 <body>
 <main>
-  <h1>Garmin SpO2 for OSCAR</h1>
-  <p class="lede">Turn the overnight SpO2 and pulse recorded by your Garmin watch into files OSCAR can import, so you can see them next to your CPAP data.</p>
+  <h1>Garmin for OSCAR</h1>
+  <p class="lede">Turn the overnight data from your Garmin watch (SpO2, pulse, movement, sleep stages, breathing disruptions and more) into files OSCAR can import, so you can see them next to your CPAP data, or simply view your nights here.</p>
+
+  <div class="mode" role="radiogroup" aria-label="What to do with your files">
+    <label class="mode-opt"><input type="radio" name="mode" value="convert" checked>
+      <span><b>Convert for OSCAR</b><small>Files to import into OSCAR.</small></span></label>
+    <label class="mode-opt"><input type="radio" name="mode" value="view">
+      <span><b>View my nights</b><small>The Journal note and graphs of each night, right here. Nothing to download.</small></span></label>
+  </div>
 
   <label class="drop" id="drop">
     <input type="file" id="fileInput" multiple accept=".zip,.fit,.FIT,.json,application/zip,application/json">
@@ -257,6 +315,10 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       <div class="inline" id="breathingOption">
         <label><input type="checkbox" id="withBreathing" checked> <span>Include breathing disruptions <small>Two .csv files for a spreadsheet: a summary per night and every period. OSCAR can’t display them.</small></span></label>
       </div>
+      <div class="inline hidden" id="chestOption">
+        <label><input type="checkbox" id="chestPos"> <span>Watch taped on the chest during the night app recording <small>The body position (back, left, right, belly) goes to OSCAR’s Inclination graph (roll angle: 0 back, +90 left, −90 right, ±180 belly), the Journal and the summary. Needs the Somnopose file below for the graph.</small></span></label>
+        <label><input type="checkbox" id="chestFlip"> <span>The watch is upside down <small>Swaps left and right.</small></span></label>
+      </div>
       <div class="inline hidden" id="breathingPosOption">
         <label><input type="checkbox" id="breathingAsPosition"> <span>Also show breathing disruptions and restless moments in OSCAR <small>A file for “Import Somnopose data”. Breathing disruptions become an “Orientation” graph (0 not measured, 10 none, 20 low, 30 medium, 40 high), restless moments an “Inclination” graph with one spike each. Movement and oximetry are unchanged.</small></span></label>
       </div>
@@ -267,16 +329,29 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
       </div>
     </div>
 
-    <div class="download-row">
+    <div class="view-only" id="viewArea">
+      <div class="night-picker">
+        <label for="nightSelect">Night</label>
+        <select id="nightSelect"></select>
+        <button type="button" class="icon-btn" id="prevNight" aria-label="Previous night">&#8249;</button>
+        <button type="button" class="icon-btn" id="nextNight" aria-label="Next night">&#8250;</button>
+      </div>
+      <div id="nightDetail"></div>
+    </div>
+
+    <div class="download-row convert-only">
       <button type="button" class="button" id="downloadBtn">Download files for OSCAR</button>
       <span class="muted" id="downloadInfo"></span>
     </div>
-    <div class="status" id="downloadStatus" role="status" aria-live="polite"></div>
+    <div class="status convert-only" id="downloadStatus" role="status" aria-live="polite"></div>
 
+    <div class="convert-only">
     <p class="fine hidden" id="breathingLegend"><span class="legend-swatch" aria-hidden="true"></span>Shaded areas on a trace: breathing disruptions detected by the watch (darker means more severe).</p>
     <ul class="nights" id="nights"></ul>
     <p><button type="button" class="link-button hidden" id="showAll"></button></p>
+    </div>
 
+    <div class="convert-only">
     <h2>Import into OSCAR</h2>
     <ol class="steps" id="stepsViatom">
       <li>Unzip the downloaded file.</li>
@@ -292,6 +367,7 @@ footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.25r
     <p id="stagesStep" class="hidden">Sleep stages: in OSCAR, choose <b>Import Dreem data</b> and pick <b>garmin_sleep_stages.csv</b> in the <b>oscar_dreem</b> folder. Nights already imported are skipped, and OSCAR shows a sleep-stage graph.</p>
     <p id="somnoStep" class="hidden">Breathing disruptions and restless moments: in OSCAR, choose <b>Import Somnopose data</b> and pick <b>garmin_somnopose.csv</b> in the <b>oscar_somnopose</b> folder. Breathing disruptions appear in the <b>Orientation</b> graph (0 not measured, 10 none, 20 low, 30 medium, 40 high), restless moments in the <b>Inclination</b> graph.</p>
     <p id="journalStep">Journal: OSCAR’s Journal import relies on the note box shown on screen, so follow these steps exactly. 1) <b>File → Backup Journal</b>. 2) Display a day that is <b>not</b> in <b>garmin_journal.xml</b> (for example before your first night with the watch) and whose <b>Notes box is not empty</b>: type a temporary “x” if needed. 3) <b>File → Import Journal</b> and pick <b>garmin_journal.xml</b> in the <b>oscar_journal</b> folder. 4) Remove the “x”, change day and check a couple of days. If the note box is empty during the import, OSCAR erases the notes of the imported days; if the day on screen is in the file, its note is replaced by the Garmin one.</p>
+    </div>
   </section>
 
   <footer>
@@ -709,6 +785,277 @@ function writeDreem(stages) {
   return { name: "oscar_dreem/garmin_sleep_stages.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") };
 }
 
+/* ---------- night recording by an activity app (1 s SpO2 / pulse, 100 Hz motion) ---------- */
+const NIGHT_SPO2_NAMES = ["spo2", "oxygen", "saturation"], NIGHT_HR_NAMES = ["hr", "heart", "pulse"];
+const NFMT = { 0x00: ["u8", 1], 0x01: ["s8", 1], 0x02: ["u8", 1], 0x83: ["s16", 2], 0x84: ["u16", 2], 0x85: ["s32", 4], 0x86: ["u32", 4],
+  0x88: ["f32", 4], 0x89: ["f64", 8], 0x0A: ["u8", 1], 0x8B: ["u16", 2], 0x8C: ["u32", 4], 0x0D: ["u8", 1] };
+function pyRound(x) { const r = Math.round(x); return Math.abs(x % 1) === 0.5 && r % 2 !== 0 ? r - Math.sign(x) : r; }
+
+function extractNightRecording(buf) {
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  if (u8.length < 12 || String.fromCharCode(u8[8], u8[9], u8[10], u8[11]) !== ".FIT") return null;
+  const hsize = u8[0], end = Math.min(hsize + dv.getUint32(4, true), u8.length);
+  const defs = {}, devDesc = new Map(), spo2 = new Map(), hr = new Map(), act = new Map(), gsum = new Map();
+  let pos = hsize, lastTs = null, prev = null;
+  while (pos < end) {
+    const rh = u8[pos++];
+    let d, ts = null;
+    if (rh & 0x80) {
+      d = defs[(rh >> 5) & 3];
+      if (lastTs !== null) lastTs = lastTs + (((rh & 0x1F) - (lastTs & 0x1F)) & 0x1F);
+      ts = lastTs;
+    } else if (rh & 0x40) {
+      const little = u8[pos + 1] === 0, g = dv.getUint16(pos + 2, little), nf = u8[pos + 4];
+      pos += 5;
+      const f = {}; let o = 0;
+      for (let i = 0; i < nf; i++) { f[u8[pos]] = [o, u8[pos + 1], u8[pos + 2]]; o += u8[pos + 1]; pos += 3; }
+      const devs = [];
+      if (rh & 0x20) {
+        const nd = u8[pos++];
+        for (let i = 0; i < nd; i++) { devs.push([u8[pos], u8[pos + 1], u8[pos + 2], o]); o += u8[pos + 1]; pos += 3; }
+      }
+      defs[rh & 0x0F] = { g, little, f, devs, size: o };
+      continue;
+    } else {
+      d = defs[rh & 0x0F];
+    }
+    if (!d) throw new Error("bad FIT record");
+    const { g, little, f } = d;
+    if (253 in f) { ts = dv.getUint32(pos + f[253][0], little); lastTs = ts; }
+    if (g === 206) {
+      const b = (n) => (n in f ? u8[pos + f[n][0]] : null);
+      let name = "";
+      if (3 in f) { const [o, size] = f[3]; let e = pos + o; const stop = pos + o + size; while (e < stop && u8[e] !== 0) e++; name = new TextDecoder().decode(u8.subarray(pos + o, e)); }
+      devDesc.set(`${b(0)}:${b(1)}`, [name.toLowerCase(), b(2)]);
+    } else if (g === 20 && ts !== null) {
+      for (const [num, size, idx, o] of d.devs) {
+        const [name, bt] = devDesc.get(`${idx}:${num}`) || ["", 2];
+        const fm = NFMT[bt] || NFMT[2];
+        if (fm[1] !== size) continue;
+        const v = readValue(dv, pos + o, fm[0], little);
+        if (NIGHT_SPO2_NAMES.some((k) => name.includes(k))) { if (v >= 50 && v <= 100) spo2.set(ts, v); }
+        else if (NIGHT_HR_NAMES.some((k) => name.includes(k))) { if (v >= 25 && v <= 250) hr.set(ts, v); }
+      }
+      if (!hr.has(ts) && 3 in f && f[3][1] === 1) { const v = u8[pos + f[3][0]]; if (v >= 25 && v <= 250) hr.set(ts, v); }
+    } else if (g === 165 && ts !== null) {
+      const calib = 5 in f, axes = calib ? [f[5], f[6], f[7]] : [f[2], f[3], f[4]];
+      if (axes.every(Boolean)) {
+        const sz = calib ? 4 : 2, n = axes[0][1] / sz;
+        const rd = (a, i) => (calib ? dv.getFloat32(pos + a[0] + i * 4, little) : dv.getUint16(pos + a[0] + i * 2, little));
+        let total = 0, sxs = 0, sys = 0, szs = 0;
+        for (let i = 0; i < n; i++) {
+          const x = rd(axes[0], i), y = rd(axes[1], i), z = rd(axes[2], i);
+          if (prev) total += Math.abs(x - prev[0]) + Math.abs(y - prev[1]) + Math.abs(z - prev[2]);
+          prev = [x, y, z];
+          sxs += x; sys += y; szs += z;
+        }
+        act.set(ts, (act.get(ts) || 0) + total);
+        if (calib) {
+          const g = gsum.get(ts) || [0, 0, 0, 0];
+          g[0] += sxs; g[1] += sys; g[2] += szs; g[3] += n;
+          gsum.set(ts, g);
+        }
+      }
+    }
+    pos += d.size;
+  }
+  if (!spo2.size && !act.size) return null;
+  const times = [...new Set([...spo2.keys(), ...hr.keys(), ...act.keys()])].sort((a, b) => a - b);
+  const grav = new Map();
+  for (const [t, g] of gsum) if (g[3]) grav.set(t, [g[0] / g[3], g[1] / g[3], g[2] / g[3]]);
+  return { start: times[0], stop: times[times.length - 1], spo2, hr, act, grav };
+}
+
+/* Body position from a watch taped on the chest: y to the head, z out of the chest, x to the left.
+   roll 0 = back, +90 = left, -90 = right, +-180 = belly; elevation 90 = upright. */
+const POSITIONS = ["belly", "left", "back", "right", "upright"];
+function bodyPosition(grav, flip = false) {
+  if (!grav || !grav.size) return [[], 1];
+  const times = [...grav.keys()].sort((a, b) => a - b);
+  const short = times[times.length - 1] - times[0] < 1800;
+  const win = short ? 1 : 10, smooth = short ? 5 : 6;
+  const bins = new Map();
+  for (const t of times) { const k = t - (t % win); if (!bins.has(k)) bins.set(k, []); bins.get(k).push(grav.get(t)); }
+  const sx = flip ? -1 : 1, out = [];
+  for (const t of [...bins.keys()].sort((a, b) => a - b)) {
+    const vals = bins.get(t);
+    const med = [0, 1, 2].map((i) => vals.map((v) => v[i]).sort((a, b) => a - b)[Math.floor(vals.length / 2)]);
+    const [x, y, z] = med, norm = Math.sqrt(x * x + y * y + z * z) || 1;
+    const roll = Math.atan2(sx * x, -z) * 180 / Math.PI;
+    const elev = Math.asin(Math.max(-1, Math.min(1, -sx * y / norm))) * 180 / Math.PI;
+    const pos = elev > 45 ? "upright" : Math.abs(roll) > 135 ? "belly" : roll > 45 ? "left" : roll < -45 ? "right" : "back";
+    out.push([t, roll, elev, POSITIONS.indexOf(pos)]);
+  }
+  const codes = out.map((o) => o[3]);
+  out.forEach((o, i) => {
+    const w = codes.slice(Math.max(0, i - Math.floor(smooth / 2)), i + Math.floor((smooth - 1) / 2) + 1);
+    let best = 0, bc = -1;
+    for (let c = 0; c < POSITIONS.length; c++) { const n = w.filter((x) => x === c).length; if (n > bc) { bc = n; best = c; } }
+    o[3] = POSITIONS[best];
+  });
+  return [out, win];
+}
+function positionSummary(pos, win) {
+  const mins = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
+  for (const [, , , p] of pos) mins[p] += win / 60;
+  const lying = pos.map((x) => x[3]).filter((p) => p !== "upright");
+  let changes = 0;
+  for (let i = 1; i < lying.length; i++) if (lying[i] !== lying[i - 1]) changes++;
+  return { mins, changes };
+}
+/** Applies (or removes) the chest position on a night recording, at download time. */
+function applyChest(n, on, flip) {
+  delete n.position; delete n.summary.position;
+  if (!on || !n.grav || !n.grav.size) return [];
+  const [pos, win] = bodyPosition(n.grav, flip);
+  n.position = pos.filter((p) => p[0] >= n.start);
+  if (!n.position.length) { delete n.position; return []; }
+  n.summary.position = positionSummary(n.position, win);
+  const lines = ["Time,Roll (deg),Elevation (deg),Position"];
+  for (const [t, r, e, p] of n.position) lines.push(`${isoLocal(fitToDate(t))},${pyFixed(r, 0)},${pyFixed(e, 0)},${p}`);
+  return [{ name: `csv/garmin_night_${n.stamp}_position.csv`, data: new TextEncoder().encode(lines.join("\n") + "\n") }];
+}
+
+function analyzeMovement(act, hr) {
+  if (!act.size) return [new Map(), []];
+  const vals = [...act.values()].sort((a, b) => a - b);
+  const med = vals[Math.floor(vals.length / 2)] || 1;
+  const index = new Map([...act].map(([t, v]) => [t, Math.max(0, v - med)]));
+  const moving = [...act].filter(([, v]) => v > 1.4 * med).map(([t]) => t).sort((a, b) => a - b);
+  const hrRise = (a, b) => {
+    const base = [], peak = [];
+    for (let t = a - 30; t < a; t++) if (hr.has(t)) base.push(hr.get(t));
+    for (let t = a; t < b + 21; t++) if (hr.has(t)) peak.push(hr.get(t));
+    return base.length && peak.length ? Math.max(...peak) - base.reduce((s, x) => s + x, 0) / base.length : 0;
+  };
+  let eps = [];
+  for (const t of moving) {
+    if (eps.length && t - eps[eps.length - 1][1] <= 3) { eps[eps.length - 1][1] = t; eps[eps.length - 1][2] += 1; }
+    else eps.push([t, t, 1]);
+  }
+  eps = eps.filter((e) => e[2] >= 3 || hrRise(e[0], e[1]) >= 8);
+  const bouts = [];
+  for (const [a, b, n] of eps) {
+    const last = bouts[bouts.length - 1];
+    if (last && a - last.end <= 60) { last.end = b; last.moving += n; }
+    else bouts.push({ start: a, end: b, moving: n });
+  }
+  // handling the watch to start / stop the app is not an awakening
+  let first = Infinity, lastT = -Infinity;
+  for (const t of act.keys()) { if (t < first) first = t; if (t > lastT) lastT = t; }
+  const kept = bouts.filter((bt) => bt.start - first > 120 && lastT - bt.end > 120);
+  bouts.length = 0; bouts.push(...kept);
+  for (const bt of bouts) {
+    bt.type = bt.moving >= 30 || bt.end - bt.start >= 120 ? "awakening" : "micro-awakening";
+    bt.hr_rise = hrRise(bt.start, bt.end);
+  }
+  return [index, bouts];
+}
+
+function writeViatomNight(rec, index, start, step = 2, stop = null, extraSpo2 = new Map(), extraHr = new Map()) {
+  if (stop === null) stop = rec.stop;
+  const n = Math.min(Math.floor((stop - start) / step) + 1, Math.floor(65535 / step));
+  const out = new Uint8Array(40 + n * 5), dvo = new DataView(out.buffer), o2s = [], prs = [];
+  let lastO2 = null;
+  for (let k = 0; k < n; k++) {
+    const t = start + k * step;
+    let o2 = null, pr = null, mv = 0;
+    if (rec.start <= t && t <= rec.stop) {
+      for (let x = t; x < t + step; x++) if (o2 === null && rec.spo2.has(x)) o2 = rec.spo2.get(x);
+      if (o2 === null) o2 = lastO2; else lastO2 = o2;
+      for (let x = t; x < t + step; x++) if (pr === null && rec.hr.has(x)) pr = rec.hr.get(x);
+    } else {
+      for (let x = t; x < t + step; x++) if (o2 === null && extraSpo2.has(x)) o2 = extraSpo2.get(x);
+      for (let x = t; x < t + step; x++) if (pr === null && extraHr.has(x)) pr = extraHr.get(x);
+    }
+    for (let x = t; x < t + step; x++) mv = Math.max(mv, index.get(x) || 0);
+    mv = Math.max(0, Math.min(255, pyRound(mv / 100)));
+    const p = 40 + k * 5;
+    if (pr !== null && pr >= 30 && pr <= 250) {
+      if (o2 !== null && o2 >= 61 && o2 <= 100) o2s.push(o2); else o2 = 0xFF;
+      prs.push(pr);
+      out[p] = o2; out[p + 1] = pr; out[p + 3] = mv;
+    } else { out[p] = 0xFF; out[p + 1] = 0xFF; out[p + 2] = 0xFF; out[p + 3] = mv; }
+  }
+  const d = fitToDate(start);
+  dvo.setUint16(0, 5, true); dvo.setUint16(2, d.getFullYear(), true);
+  out[4] = d.getMonth() + 1; out[5] = d.getDate(); out[6] = d.getHours(); out[7] = d.getMinutes(); out[8] = d.getSeconds();
+  out[9] = out.length & 0xFF; out[10] = (out.length >> 8) & 0xFF; out[11] = (out.length >> 16) & 0xFF;
+  dvo.setUint16(13, n * step, true);
+  if (o2s.length) {
+    out[17] = pyRound(o2s.reduce((a, b) => a + b, 0) / o2s.length); out[18] = Math.min(...o2s);
+    dvo.setUint16(22, Math.min(65535, step * o2s.filter((v) => v < 90).length), true);
+  }
+  if (prs.length) out[30] = Math.min(255, pyRound(prs.reduce((a, b) => a + b, 0) / prs.length));
+  return { name: `oscar_viatom/Garmin_${stamp14(d)}`, data: out };
+}
+
+function nightCsvFiles(rec, index, events, stamp) {
+  const enc = new TextEncoder(), lines = ["Time,SpO2,Pulse,Movement"];
+  for (let t = rec.start; t <= rec.stop; t++) {
+    if (rec.spo2.has(t) || rec.hr.has(t) || index.has(t)) {
+      lines.push(`${isoLocal(fitToDate(t))},${rec.spo2.has(t) ? rec.spo2.get(t) : ""},${rec.hr.has(t) ? rec.hr.get(t) : ""},${pyFixed(index.get(t) || 0, 0)}`);
+    }
+  }
+  const ev = ["Type,Start,End,Duration (s),Movement (s),Pulse rise (bpm)"];
+  for (const e of events) ev.push(`${e.type},${isoLocal(fitToDate(e.start))},${isoLocal(fitToDate(e.end))},${e.end - e.start + 1},${e.moving},${pyFixed(e.hr_rise, 0)}`);
+  return [{ name: `csv/garmin_night_${stamp}.csv`, data: enc.encode(lines.join("\n") + "\n") },
+    { name: `csv/garmin_night_${stamp}_awakenings.csv`, data: enc.encode(ev.join("\n") + "\n") }];
+}
+
+/** Everything for one night recording: Viatom + CSV files, Journal / summary data, minute SpO2. */
+/** The watch's own SpO2 (1/min) instead of the app's, which changes less often and ~10 min late. */
+function mergeWatchSpo2(rec, readings, maxHold = 120) {
+  const rs = readings.filter((r) => rec.start - 60 <= r[0] && r[0] <= rec.stop).sort((a, b) => a[0] - b[0]);
+  if (rs.length < 30) return rec;
+  const spo2 = new Map();
+  rs.forEach(([t, v], i) => {
+    const nxt = i + 1 < rs.length ? rs[i + 1][0] : t + 60;
+    for (let s = Math.max(t, rec.start); s < Math.min(nxt, t + maxHold, rec.stop + 1); s++) spo2.set(s, v);
+  });
+  return { ...rec, spo2, spo2_source: "watch" };
+}
+
+function handleNightRecording(rec, watchReadings = [], watchHr = new Map(), watchHrTimes = []) {
+  if (watchReadings.length) rec = mergeWatchSpo2(rec, watchReadings);
+  const [index, events] = analyzeMovement(rec.act, rec.hr);
+  const key = dateKey(...eveningOf(rec.start)), [y, m, d] = eveningOfKey(key);
+  let start = rec.start;
+  const midnight = Math.round(new Date(y, m, d + 1).getTime() / 1000) - FIT_TO_UNIX;
+  if (dayLengthHours(y, m, d) !== 24 && start < midnight) start = midnight;
+  // the watch's own readings of the same night (before / after the recording) go into the same file
+  const lower = start > rec.start ? start : 0;
+  const outside = watchReadings.filter((r) => dateKey(...eveningOf(r[0])) === key && r[0] >= lower && !(rec.start <= r[0] && r[0] <= rec.stop))
+    .sort((a, b) => a[0] - b[0]);
+  let spanStart = start, spanStop = rec.stop;
+  const extraSpo2 = new Map(), extraHr = new Map();
+  if (outside.length) {
+    const s0 = Math.min(start, outside[0][0]), s1 = Math.max(rec.stop, outside[outside.length - 1][0] + 59);
+    if (s1 - s0 < 18 * 3600) {
+      spanStart = s0; spanStop = s1;
+      outside.forEach(([t, v], i) => {
+        const nxt = i + 1 < outside.length ? outside[i + 1][0] : t + 60;
+        const pr = nearestHr(watchHrTimes, watchHr, t, 300);
+        for (let s = t; s < Math.min(nxt, t + 120); s++) {
+          if (!(rec.start <= s && s <= rec.stop)) { extraSpo2.set(s, v); if (pr) extraHr.set(s, pr); }
+        }
+      });
+    }
+  }
+  const viatom = writeViatomNight(rec, index, spanStart, 2, spanStop, extraSpo2, extraHr);
+  const stamp = stamp14(fitToDate(spanStart));
+  const hrs = [...rec.hr.values()], aw = events.filter((e) => e.type === "awakening");
+  const summary = { micro: events.filter((e) => e.type === "micro-awakening").length,
+    awakenings: aw.map((e) => [e.start, e.end]), awake_min: aw.reduce((s, e) => s + e.end - e.start + 1, 0) / 60,
+    hr: hrs.length ? [hrs.reduce((a, b) => a + b, 0) / hrs.length, Math.min(...hrs), Math.max(...hrs)] : null,
+    start, stop: rec.stop };
+  const minute = new Map();
+  for (const [t, v] of rec.spo2) { const mt = t - (t % 60); if (!minute.has(mt)) minute.set(mt, [mt, v, 0]); }
+  const minuteReadings = [...minute.values()].sort((a, b) => a[0] - b[0]).filter((r) => r[0] >= start);
+  return { key, start, stop: rec.stop, events, summary, viatom, csv: nightCsvFiles(rec, index, events, stamp), minuteReadings,
+    grav: rec.grav, stamp, hr: rec.hr, index };
+}
+
 /* ---------- breathing disruptions (Garmin “breathing variations”) -> CSV ---------- */
 const SEVERITY = { 0: "none", 1: "low", 2: "medium", 3: "high" };
 const SEVERITY_JSON = { NONE: "none", LOW: "low", MINIMAL: "low", MEDIUM: "medium", MODERATE: "medium", HIGH: "high" };
@@ -783,12 +1130,14 @@ const SOMNO_VALUE = { "not measured": 0, none: 10, low: 20, medium: 30, high: 40
 const SOMNO_EPOCH = 978307200 - FIT_TO_UNIX;      // 2001-01-01 UTC in FIT seconds
 /** Breathing disruptions as a Somnopose file: OSCAR shows the Orientation column as its own graph. */
 /** Orientation = breathing disruptions, Inclination = restless moments (spikes); one session per night. */
-function writeSomnopose(breathing, restless) {
+function writeSomnopose(breathing, restless, nightRecs = []) {
   const br = new Map(breathing.map((s) => [s.key, s])), rs = new Map(restless.map((s) => [s.key, s]));
-  const keys = [...new Set([...br.keys(), ...rs.keys()])].sort();
+  const ev = new Map();
+  for (const n of [...nightRecs].sort((a, b) => a.start - b.start)) if (!ev.has(n.key)) ev.set(n.key, n);
+  const keys = [...new Set([...br.keys(), ...rs.keys(), ...ev.keys()])].sort();
   const lines = ["Timestamp,Orientation,Inclination"];
   for (const key of keys) {
-    const b = br.get(key), r = rs.get(key), parts = [b, r].filter(Boolean);
+    const b = br.get(key), r = rs.get(key), nr = ev.get(key), parts = [b, r, nr].filter(Boolean);
     let start = Math.min(...parts.map((x) => x.start));
     const stop = Math.max(...parts.map((x) => x.stop));
     const [y, m, d] = eveningOfKey(key);
@@ -803,7 +1152,17 @@ function writeSomnopose(breathing, restless) {
         rows.push([t0, 2, `${t0 - SOMNO_EPOCH},${v},`], [t1, 0, `${t1 - SOMNO_EPOCH},${v},`]);
       }
     }
-    if (r) {
+    if (nr && nr.position) {
+      for (const [t, roll] of nr.position) rows.push([t, 1, `${t - SOMNO_EPOCH},,${pyFixed(roll, 0)}`]);
+    } else if (nr) {
+      const ln = (t, v) => [t, 1, `${t - SOMNO_EPOCH},,${v}`];
+      rows.push(ln(start, 0), ln(stop, 0));
+      for (const e of nr.events) {
+        if (e.start < start) continue;
+        if (e.type === "awakening") rows.push(ln(e.start - 1, 0), ln(e.start, 2), ln(e.end, 2), ln(e.end + 1, 0));
+        else { const t = Math.floor((e.start + e.end) / 2); rows.push(ln(t - 30, 0), ln(t, 1), ln(t + 30, 0)); }
+      }
+    } else if (r) {
       const pts = [[start, 0], ...r.moments.filter((t) => t >= start).map((t) => [t, 1]), [stop, 0]];
       for (const [t, v] of pts) {
         if (v) rows.push([t - 30, 1, `${t - 30 - SOMNO_EPOCH},,0`], [t, 1, `${t - SOMNO_EPOCH},,1`], [t + 30, 1, `${t + 30 - SOMNO_EPOCH},,0`]);
@@ -970,6 +1329,8 @@ function nightInfos(readings, sleepRaw, breathing, restless, extras, resp) {
 }
 
 const GOOD_COLOR = "#2e7d32", BAD_COLOR = "#c62828";
+const MICRO_GOOD_PER_H = 5, MICRO_BAD_PER_H = 10;   // movement-based micro-awakenings per hour
+const MIN_NIGHT_MINUTES = 180;   // less sleep than this: the Journal note only gives the day before
 const DEFAULT_RANGES = { deep: [16, 33], rem: [21, 31], light: [30, 64], total: [420, 540], awakenings: [0, 1], stress: [0, 25] };
 const escH = (x) => String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const colorTxt = (text, good) => (good === null || good === undefined ? escH(text)
@@ -1028,6 +1389,26 @@ function journalNote(info) {
     if (b.overall) items.push("overall " + colorTxt(b.overall, b.overall === "none" ? true : (b.overall === "medium" || b.overall === "high") ? false : null));
   }
   line("Breathing", items);
+  const nr = info.night_rec;
+  if (nr) {
+    const hours = Math.max((nr.stop - nr.start) / 3600, 0.1), rate = nr.micro / hours;
+    items = [escH(`${hhmm(fitToDate(nr.start))}-${hhmm(fitToDate(nr.stop))}`),
+      colorTxt(`${nr.micro} micro-awakenings (${pyFixed(rate, 1)}/h)`, judge(rate, (x) => x < MICRO_GOOD_PER_H, (x) => x > MICRO_BAD_PER_H))];
+    if (nr.awakenings.length) {
+      const na = nr.awakenings.length, good = na <= 2 && nr.awake_min <= 20 ? true : (na >= 5 || nr.awake_min > 45) ? false : null;
+      items.push(colorTxt(`${na} awakenings (${durTxt(nr.awake_min)})`, good) + escH(" at " + nr.awakenings.map(([a]) => hhmm(fitToDate(a))).join(", ")));
+    }
+    else items.push(colorTxt("no awakening", true));
+    if (nr.hr) items.push(escH(`pulse avg ${pyFixed(nr.hr[0], 0)} (min ${nr.hr[1]}, max ${nr.hr[2]})`));
+    line("Night recording", items);
+    const ps = nr.position;
+    if (ps) {
+      const total = Object.values(ps.mins).reduce((a, v) => a + v, 0) || 1;
+      items = ["back", "right", "left", "belly", "upright"].map((p) => escH(`${p} ${durTxt(ps.mins[p])} (${pyFixed(100 * ps.mins[p] / total, 0)} %)`));
+      items.push(escH(`${ps.changes} changes`));
+      line("Position", items);
+    }
+  }
   items = [];
   if ("hrv" in ex) {
     const st = ex.hrv_status, good = st === "balanced" ? true : (st === "low" || st === "poor") ? false : null;
@@ -1069,17 +1450,47 @@ function journalBookmarks(info) {
   return out.sort((a, b) => a[0] - b[0] || a[1] - b[1] || (a[2] < b[2] ? -1 : 1));
 }
 
-function writeJournal(readings, sleepRaw, breathing, restless, extras, resp, from, dayData = {}) {
-  const xa = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/** Map evening date -> Journal note HTML (same rules as the Journal file). */
+function journalNotes(readings, sleepRaw, breathing, restless, extras, resp, from, dayData = {}, nightRecs = []) {
   const infos = nightInfos(readings, sleepRaw, breathing, restless, extras, resp);
-  for (const [k, info] of infos) if (dayData[k]) info.day_before = dayData[k];
-  const days = [];
+  const todayKey = (() => { const t = new Date(); return dateKey(t.getFullYear(), t.getMonth(), t.getDate()); })();
+  const seenRec = new Set();
+  for (const n of [...nightRecs].sort((a, b) => a.start - b.start)) {
+    if (seenRec.has(n.key)) continue;
+    seenRec.add(n.key);
+    if (!infos.has(n.key)) infos.set(n.key, { scores: {}, extras: {} });
+    infos.get(n.key).night_rec = n.summary;
+  }
+  for (const [k, d] of Object.entries(dayData)) {
+    if (k < todayKey) {                 // also nights without sleep data (e.g. an activity was running)
+      if (!infos.has(k)) infos.set(k, { scores: {}, extras: {} });
+      infos.get(k).day_before = d;
+    }
+  }
+  const notes = new Map();
   for (const k of [...infos.keys()].sort()) {
-    const info = infos.get(k);
+    let info = infos.get(k);
     if (from && k < from) continue;
-    if (!info.stages && !info.breathing) continue;          // night not finished yet
+    const sm = info.stages, rec = !!info.night_rec;
+    if (sm && sm.Deep + sm.Light + sm.REM < MIN_NIGHT_MINUTES) {
+      // only a scrap of sleep (e.g. an activity started during the night): keep the day before only,
+      // plus the night app's recording if there is one
+      if (!info.day_before && !rec) continue;
+      const keep = { scores: {}, extras: {} };
+      if (info.day_before) keep.day_before = info.day_before;
+      if (rec) { keep.night_rec = info.night_rec; if (info.spo2) keep.spo2 = info.spo2; }
+      info = keep;
+    } else if (!info.stages && !info.breathing && !rec && (info.spo2 || !info.day_before)) continue;   // night not finished yet
     const note = journalNote(info);
-    if (!note) continue;
+    if (note) notes.set(k, note);
+  }
+  return notes;
+}
+
+function writeJournal(readings, sleepRaw, breathing, restless, extras, resp, from, dayData = {}, nightRecs = []) {
+  const xa = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const days = [];
+  for (const [k, note] of journalNotes(readings, sleepRaw, breathing, restless, extras, resp, from, dayData, nightRecs)) {
     let x = `    <day date="${k}" lastupdated="">\n`;
     x += `      <note>\n        <text>${xa(note).replace(/&quot;/g, '"')}</text>\n      </note>\n`;
     days.push(x + "    </day>\n");
@@ -1090,7 +1501,9 @@ function writeJournal(readings, sleepRaw, breathing, restless, extras, resp, fro
 }
 
 /** One row per night: what OSCAR can’t show. Scores from .fit (numbers) win over Garmin Connect ratings. */
-function writeSummary(readings, sleepRaw, breathing, restless, from, days = {}) {
+function writeSummary(readings, sleepRaw, breathing, restless, from, days = {}, nightRecs = []) {
+  const nrm = new Map();
+  for (const n of [...nightRecs].sort((a, b) => a.start - b.start)) if (!nrm.has(n.key)) nrm.set(n.key, n.summary);
   const st = new Map();
   const sorted = [...sleepRaw].sort((a, b) => a.start - b.start || ("quality" in (a.scores || {}) ? 0 : 1) - ("quality" in (b.scores || {}) ? 0 : 1));
   for (const s of sorted) {
@@ -1107,8 +1520,10 @@ function writeSummary(readings, sleepRaw, breathing, restless, from, days = {}) 
     ox.get(key).push(v);
   }
   for (const [k, v] of ox) if (v.length < 30) ox.delete(k);
-  const keys = [...new Set([...st.keys(), ...br.keys(), ...rs.keys(), ...ox.keys()])].filter((k) => !from || k >= from).sort();
-  const lines = ["Night,Sleep start,Sleep end,Sleep score,Sleep quality,Restlessness,Interruptions,Awakenings,Restless moments,Deep (min),Light (min),REM (min),Awake (min),SpO2 avg,SpO2 min,SpO2 under 90% (min),Breathing overall,Breathing low (min),Breathing medium (min),Breathing high (min),Steps (day before),Distance km (day before),Active min (day before),Active kcal (day before),Intensity min (day before),Activities (day before)"];
+  const todayK = (() => { const t = new Date(); return dateKey(t.getFullYear(), t.getMonth(), t.getDate()); })();
+  const dayKeys = Object.keys(days).filter((k) => k < todayK);
+  const keys = [...new Set([...st.keys(), ...br.keys(), ...rs.keys(), ...ox.keys(), ...dayKeys, ...nrm.keys()])].filter((k) => !from || k >= from).sort();
+  const lines = ["Night,Sleep start,Sleep end,Sleep score,Sleep quality,Restlessness,Interruptions,Awakenings,Restless moments,Deep (min),Light (min),REM (min),Awake (min),SpO2 avg,SpO2 min,SpO2 under 90% (min),Breathing overall,Breathing low (min),Breathing medium (min),Breathing high (min),Steps (day before),Distance km (day before),Active min (day before),Active kcal (day before),Intensity min (day before),Activities (day before),Micro-awakenings (movement),Awakenings (movement),Awake min (movement),Back (min),Left (min),Right (min),Belly (min),Upright (min),Position changes"];
   const s0 = (v) => (v === undefined || v === null ? "" : String(v));
   for (const k of keys) {
     const s = st.get(k), b = br.get(k), r = rs.get(k), o = ox.get(k);
@@ -1126,6 +1541,10 @@ function writeSummary(readings, sleepRaw, breathing, restless, from, days = {}) 
     if (b) cells.push(b.overall || "", ...["low", "medium", "high"].map((x) => bm[x].toFixed(0)));
     else cells.push("", "", "", "");
     cells.push(...dayBeforeCells(days[k]));
+    const ns = nrm.get(k);
+    cells.push(...(ns ? [String(ns.micro), String(ns.awakenings.length), pyFixed(ns.awake_min, 0)] : ["", "", ""]));
+    const nps = ns && ns.position;
+    cells.push(...(nps ? [...["back", "left", "right", "belly", "upright"].map((p) => pyFixed(nps.mins[p], 0)), String(nps.changes)] : ["", "", "", "", "", ""]));
     lines.push(cells.join(","));
   }
   return keys.length ? { name: "garmin_nights_summary.csv", data: new TextEncoder().encode(lines.join("\n") + "\n") } : null;
@@ -1158,7 +1577,7 @@ function buildNights(spo2, hr) {
   }
   if (cur.length) segments.push({ key: curKey, ev: eveningOfKey(curKey), readings: cur });
 
-  const nights = [];
+  const kept = [];
   for (const s of segments) {
     let rs = s.readings, dstTrimmed = 0;
     const [y, m, d] = s.ev;
@@ -1168,6 +1587,16 @@ function buildNights(spo2, hr) {
       dstTrimmed = before - rs.length;
     }
     if (!rs.length || rs[rs.length - 1][0] - rs[0][0] < MIN_SPAN) continue;
+    // one file per night: segments of the same night go together (gaps = no data),
+    // unless the night would exceed the 18 h a file holds
+    const last = kept[kept.length - 1];
+    if (last && last.key === s.key && rs[rs.length - 1][0] - last.rs[0][0] < 18 * 3600) {
+      last.rs = last.rs.concat(rs); last.dstTrimmed += dstTrimmed;
+    } else kept.push({ key: s.key, ev: s.ev, rs, dstTrimmed });
+  }
+  const nights = [];
+  for (const s of kept) {
+    const rs = s.rs, dstTrimmed = s.dstTrimmed;
     const vals = rs.map((r) => r[1]);
     const moved = state.movement ? rs.filter((r) => state.movement.has(r[0] - (r[0] % 60))).length : 0;
     nights.push({
@@ -1426,11 +1855,12 @@ function renderNights() {
   const bs = selectedBreathing();
   if (bs.length) parts.push(`${bs.length} night${bs.length > 1 ? "s" : ""} of breathing disruptions`);
   $("downloadInfo").textContent = parts.length ? parts.join(", ") + " selected" : "No nights in this range";
-  $("downloadBtn").disabled = !sel.length && !st.length && !bs.length;
+  $("downloadBtn").disabled = !sel.length && !st.length && !bs.length && !(state.nightRecs || []).length;
   $("breathingOption").classList.toggle("hidden", !state.breathing.length);
   $("breathingLegend").classList.toggle("hidden", !state.breathing.length);
-  const somnoData = state.breathing.length || state.restless.length;
+  const somnoData = state.breathing.length || state.restless.length || (state.nightRecs || []).length;
   $("breathingPosOption").classList.toggle("hidden", !somnoData);
+  $("chestOption").classList.toggle("hidden", !(state.nightRecs || []).some((n) => n.grav && n.grav.size));
   $("somnoStep").classList.toggle("hidden", !(somnoData && $("breathingAsPosition").checked));
   $("stagesOption").classList.toggle("hidden", !state.stages.length);
   $("stagesStep").classList.toggle("hidden", !st.length);
@@ -1450,7 +1880,8 @@ function selectedStages() {
 
 function renderSummary(fileCount) {
   const n = state.nights;
-  const all = n.length ? n : state.stages.map((s) => ({ ev: eveningOfKey(s.key) })).reverse();
+  const keysAll = [...state.stages.map((s) => s.key), ...(state.nightRecs || []).map((r) => r.key)].sort();
+  const all = n.length ? n : keysAll.map((k) => ({ ev: eveningOfKey(k) })).reverse();
   const first = all[all.length - 1], last = all[0];
   const s = $("summary");
   s.textContent = "";
@@ -1464,6 +1895,7 @@ function renderSummary(fileCount) {
   add(String(n.length), n.length === 1 ? "night with SpO2" : "nights with SpO2");
   if (state.stages.length) add(String(state.stages.length), state.stages.length === 1 ? "night with sleep stages" : "nights with sleep stages");
   if (state.breathing.length) add(String(state.breathing.length), state.breathing.length === 1 ? "night with breathing data" : "nights with breathing data");
+  if (state.nightRecs.length) add(String(state.nightRecs.length), state.nightRecs.length === 1 ? "night app recording" : "night app recordings");
   add(`${dayFmt.format(new Date(...first.ev))}`, "first night");
   add(`${dayFmt.format(new Date(...last.ev))}`, "latest night");
   add(String(fileCount), "files read");
@@ -1476,7 +1908,7 @@ async function handleFiles(fileList) {
   if (!files.length) return;
   $("results").classList.add("hidden");
   $("downloadStatus").textContent = "";
-  state.nights = []; state.stages = []; state.breathing = []; state.restless = []; state.sleepRaw = []; state.readings = []; state.showAll = false;
+  state.nights = []; state.stages = []; state.breathing = []; state.restless = []; state.sleepRaw = []; state.readings = []; state.nightRecs = []; state.showAll = false;
   try {
     const fits = [];
     for (const f of files) {
@@ -1505,7 +1937,9 @@ async function handleFiles(fileList) {
     }
     const wellness = fits.filter((f) => /wellness/i.test(f.name));
     const sleepFits = fits.filter((f) => /sleep_data|sleep_disruptions|hrv_status|skin_temp/i.test(f.name));
-    const todo = wellness.length ? [...wellness, ...sleepFits] : fits;
+    const activityFits = wellness.length ? fits.filter((f) => /activity/i.test(f.name)) : [];
+    const todo = wellness.length ? [...wellness, ...sleepFits, ...activityFits] : fits;
+    const nightRecs = [], rawRecs = [];
     const spo2 = new Map(), hr = new Map();
     let read = 0;
     for (const f of todo) {
@@ -1516,6 +1950,14 @@ async function handleFiles(fileList) {
         if (!wellness.length || /sleep_disruptions/i.test(f.name)) breathingSessions.push(...extractDisruptionsFit(buf));
         if (!wellness.length || /hrv_status|skin_temp/i.test(f.name)) extractExtrasFit(buf, extrasList);
         if (!wellness.length || /wellness/i.test(f.name)) { extractRespirationFit(buf, respMap); extractDailyActivity(buf, dailyMap); }
+        if (!wellness.length || /activity/i.test(f.name)) {
+          // night app recordings: SpO2 developer field, or a large activity file (100 Hz motion)
+          const head = new TextDecoder("latin1").decode(new Uint8Array(buf, 0, Math.min(buf.byteLength, 262144))).toLowerCase();
+          if (head.includes("spo2") || buf.byteLength > 5e6) {
+            const rec = extractNightRecording(buf);
+            if (rec && (rec.spo2.size || rec.act.size)) rawRecs.push(rec);
+          }
+        }
       } catch (err) { /* skip unreadable file */ }
       read++;
       if (read % 5 === 0 || read === todo.length) {
@@ -1525,17 +1967,29 @@ async function handleFiles(fileList) {
       }
     }
     setProgress();
+    // the watch's SpO2 goes into the night recording (more precise), then is removed from the watch's own files
+    const hrTimesAll = [...hr.keys()].sort((a, b) => a - b);
+    for (const rec of rawRecs) nightRecs.push(handleNightRecording(rec, [...spo2.values()], hr, hrTimesAll));
+    // one file per night: the watch's readings of those nights are in the night recording's file
+    const recKeys = new Set(nightRecs.map((n) => n.key)), outsideReadings = [];
+    for (const [t, r] of [...spo2]) {
+      if (recKeys.has(dateKey(...eveningOf(t)))) {
+        if (!nightRecs.some((n) => n.start <= t && t <= n.stop)) outsideReadings.push(r);
+        spo2.delete(t);
+      }
+    }
     const built = buildNights(spo2, hr);
     state.nights = built.nights; state.hr = hr; state.hrTimes = built.hrTimes;
     state.stages = buildStages(sleepSessions);
     state.breathing = buildBreathing(breathingSessions);
     state.restless = buildRestless(restlessSessions);
     state.sleepRaw = sleepSessions;
-    state.readings = [...spo2.values()];
+    state.nightRecs = nightRecs;
+    state.readings = [...spo2.values(), ...outsideReadings, ...nightRecs.flatMap((n) => n.minuteReadings)];
     state.extras = extrasList;
     state.resp = respMap;
     state.days = dailyTotals(dailyMap);
-    if (!state.nights.length && !state.stages.length && !state.breathing.length) {
+    if (!state.nights.length && !state.stages.length && !state.breathing.length && !state.nightRecs.length) {
       setStatus(spo2.size
         ? "SpO2 readings were found, but no recording lasts 30 minutes or more."
         : "No SpO2 readings found. Check that Pulse Ox is set to “During sleep” on the watch, and that the export contains WELLNESS .fit files.", true);
@@ -1544,12 +1998,178 @@ async function handleFiles(fileList) {
     setStatus("");
     renderSummary(todo.length);
     renderNights();
+    if (document.body.classList.contains("view-mode")) renderView();
     $("results").classList.remove("hidden");
     $("resultsTitle").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   } catch (err) {
     setProgress();
     setStatus(`Could not read the files: ${err.message}.`, true);
   }
+}
+
+/* ---------- night viewer ("View my nights") ---------- */
+const W = 1000;
+const keyOfT = (t) => dateKey(...eveningOf(t));
+function svgOpen(h) { return `<svg viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" style="height:${h}px" role="img">`; }
+function chartRow(label, top, bottom, svg, aria) {
+  return `<div class="chart"><div class="chart-label"><b>${escH(label)}</b><span>${escH(top)}</span><span>${escH(bottom)}</span></div>`
+    + svg.replace('role="img">', `role="img" aria-label="${escH(aria)}">`) + `</div>`;
+}
+function linePath(points, t0, t1, h, ymin, ymax, maxGap) {
+  const x = (t) => ((t - t0) / (t1 - t0) * W).toFixed(1);
+  const y = (v) => (h - 2 - (Math.max(ymin, Math.min(ymax, v)) - ymin) / ((ymax - ymin) || 1) * (h - 4)).toFixed(1);
+  let d = "", prev = null;
+  for (const [t, v] of points) {
+    d += (prev === null || t - prev > maxGap) ? `M${x(t)} ${y(v)}` : `L${x(t)} ${y(v)}`;
+    prev = t;
+  }
+  return d;
+}
+function rects(intervals, t0, t1, rowOf, rows, h) {
+  const x = (t) => (Math.max(t0, Math.min(t1, t)) - t0) / (t1 - t0) * W;
+  return intervals.map(([a, b, cls]) => {
+    const r = rowOf(cls), x0 = x(a), x1 = x(b);
+    if (x1 <= x0 || r < 0) return "";
+    const rh = h / rows;
+    return `<rect class="${cls}" x="${x0.toFixed(1)}" width="${Math.max(0.6, x1 - x0).toFixed(1)}" y="${(r * rh).toFixed(1)}" height="${rh.toFixed(1)}"/>`;
+  }).join("");
+}
+function bucket(map, t0, t1, size, how) {
+  const b = new Map();
+  for (const [t, v] of map) {
+    if (t < t0 || t > t1) continue;
+    const k = t - (t % size);
+    const e = b.get(k) || [0, 0, -Infinity];
+    e[0] += v; e[1] += 1; e[2] = Math.max(e[2], v);
+    b.set(k, e);
+  }
+  return [...b].sort((a, c) => a[0] - c[0]).map(([k, e]) => [k, how === "max" ? e[2] : e[0] / e[1]]);
+}
+
+function renderNightDetail(key, notes) {
+  const box = $("nightDetail");
+  const night = new Date(...eveningOfKey(key));
+  let html = `<h3>Night of ${escH(dayFmt.format(night))}</h3>`;
+  const note = notes.get(key);
+  html += note ? `<div class="note-box">${note}</div>`
+    : `<div class="note-box"><p class="fine">No Garmin note for this night (not finished yet, or too little sleep recorded).</p></div>`;
+
+  const rec = (state.nightRecs || []).find((n) => n.key === key);
+  const spo2 = state.readings.filter((r) => keyOfT(r[0]) === key).map((r) => [r[0], r[1]]).sort((a, b) => a[0] - b[0]);
+  const stage = state.stages.find((x) => x.key === key);
+  const br = state.breathing.find((x) => x.key === key);
+  const rs = state.restless.find((x) => x.key === key);
+  const ts = [];
+  if (spo2.length) ts.push(spo2[0][0], spo2[spo2.length - 1][0] + 60);
+  if (stage) ts.push(stage.start, stage.stop);
+  if (rec) ts.push(rec.start, rec.stop);
+  if (br) br.periods.filter((p) => p[2] !== "not measured").forEach((p) => ts.push(p[0], p[1]));
+  if (ts.length < 2) { box.innerHTML = html; return; }
+  const t0 = Math.min(...ts), t1 = Math.max(...ts);
+  const parts = [];
+
+  if (spo2.length) {
+    const vals = spo2.map((p) => p[1]), lo = Math.min(85, Math.min(...vals) - 1);
+    const y90 = (2 + (100 - 90) / (100 - lo) * 56).toFixed(1);
+    parts.push(chartRow("SpO2 %", "100", String(lo), svgOpen(60)
+      + `<line class="ref" x1="0" x2="${W}" y1="${y90}" y2="${y90}"/>`
+      + `<path class="l c-spo2" d="${linePath(spo2, t0, t1, 60, lo, 100, 180)}"/></svg>`, "SpO2 over the night"));
+  }
+  const pulse = rec ? bucket(rec.hr, t0, t1, 30, "mean")
+    : [...(state.hr || new Map())].filter(([t]) => t >= t0 && t <= t1).sort((a, b) => a[0] - b[0]);
+  if (pulse.length) {
+    const v = pulse.map((p) => p[1]), lo = Math.floor(Math.min(...v) - 3), hi = Math.ceil(Math.max(...v) + 3);
+    parts.push(chartRow("Pulse bpm", String(hi), String(lo), svgOpen(60)
+      + `<path class="l c-pulse" d="${linePath(pulse, t0, t1, 60, lo, hi, rec ? 90 : 300)}"/></svg>`, "Pulse over the night"));
+  }
+  const move = rec ? bucket(rec.index, t0, t1, 30, "max").map(([t, v]) => [t, Math.min(255, v / 100)])
+    : [...(state.movement || new Map())].filter(([t]) => t >= t0 && t <= t1).sort((a, b) => a[0] - b[0]).map(([t, v]) => [t, v * 10]);
+  if (move.length) {
+    const hi = Math.max(1, ...move.map((p) => p[1]));
+    parts.push(chartRow(rec ? "Movement" : "Movement (Garmin)", pyFixed(hi, 0), "0", svgOpen(50)
+      + `<path class="l c-move" d="${linePath(move, t0, t1, 50, 0, hi, rec ? 90 : 300)}"/></svg>`, "Movement over the night"));
+  }
+  const legends = [];
+  if (stage) {
+    const order = ["WAKE", "REM", "Light", "Deep"];
+    const iv = stage.intervals.filter((i) => order.includes(i[2])).map(([a, b, st]) => [a, b, `st-${st}`]);
+    parts.push(chartRow("Stages", "awake", "deep", svgOpen(56) + rects(iv, t0, t1, (c) => order.indexOf(c.slice(3)), 4, 56) + `</svg>`,
+      "Sleep stages: awake, REM, light, deep"));
+    legends.push(`<i class="leg" style="background:var(--pulse)"></i>awake <i style="background:#b06ad8"></i>REM <i style="background:var(--spo2);opacity:.55"></i>light <i style="background:var(--spo2)"></i>deep`);
+  }
+  if (rec && rec.position) {
+    const order = ["back", "right", "left", "belly", "upright"], step = rec.position.length > 1 ? rec.position[1][0] - rec.position[0][0] : 10;
+    const iv = rec.position.map(([t, , , p]) => [t, t + step, `pos-${p}`]);
+    parts.push(chartRow("Position", "back", "upright", svgOpen(60) + rects(iv, t0, t1, (c) => order.indexOf(c.slice(4)), 5, 60) + `</svg>`,
+      "Body position: back, right, left, belly, upright"));
+    legends.push(`<i style="background:#27ae60"></i>back <i style="background:#e67e22"></i>right <i style="background:#2e86de"></i>left <i style="background:#8e44ad"></i>belly <i style="background:#95a5a6"></i>upright`);
+  }
+  if (br) {
+    const iv = br.periods.filter((p) => ["low", "medium", "high"].includes(p[2])).map(([a, b, sev]) => [a, b, `br-${sev}2`]);
+    parts.push(chartRow("Breathing", "", "", svgOpen(18) + rects(iv, t0, t1, () => 0, 1, 18) + `</svg>`, "Breathing disruptions"));
+    legends.push(`<i style="background:var(--warn);opacity:.35"></i>low <i style="background:var(--warn);opacity:.75"></i>medium <i style="background:var(--pulse)"></i>high breathing disruptions`);
+  }
+  if ((rec && rec.events.length) || rs) {
+    const x = (t) => ((t - t0) / (t1 - t0) * W).toFixed(1);
+    let g = svgOpen(26);
+    if (rs) for (const m of rs.moments) if (m >= t0 && m <= t1) g += `<line class="ev-restless" x1="${x(m)}" x2="${x(m)}" y1="6" y2="20"/>`;
+    if (rec) for (const e of rec.events) {
+      if (e.type === "awakening") g += `<rect class="ev-awake" x="${x(e.start)}" width="${Math.max(2, (e.end - e.start) / (t1 - t0) * W).toFixed(1)}" y="0" height="26"/>`;
+      else { const m = (e.start + e.end) / 2; g += `<line class="ev-micro" x1="${x(m)}" x2="${x(m)}" y1="3" y2="23"/>`; }
+    }
+    parts.push(chartRow(rec ? "Awakenings" : "Restless", "", "", g + `</svg>`, "Awakenings and restless moments"));
+    legends.push(rec ? `<i style="background:var(--warn)"></i>micro-awakening <i style="background:var(--pulse)"></i>awakening` : `<i style="background:var(--muted)"></i>restless moment`);
+  }
+  // time axis, one label per hour (every 2 h on long nights)
+  const stepH = (t1 - t0) > 10 * 3600 ? 2 : 1, first = fitToDate(t0);
+  let tick = new Date(first.getFullYear(), first.getMonth(), first.getDate(), first.getHours() + 1);
+  let axis = "";
+  while ((tick.getTime() / 1000 - FIT_TO_UNIX) <= t1) {
+    const t = tick.getTime() / 1000 - FIT_TO_UNIX, pct = (t - t0) / (t1 - t0) * 100;
+    if (pct >= 3 && pct <= 97) axis += `<span style="left:${pct.toFixed(2)}%">${hhmm(tick)}</span>`;
+    tick = new Date(tick.getFullYear(), tick.getMonth(), tick.getDate(), tick.getHours() + stepH);
+  }
+  html += `<div class="charts">${parts.join("")}<div class="time-axis">${axis}</div>`
+    + (legends.length ? `<div class="legend">${legends.map((l) => `<span>${l}</span>`).join("")}</div>` : "") + `</div>`;
+  box.innerHTML = html;
+}
+
+function renderView() {
+  if (!state.readings) return;
+  document.querySelector(".options").classList.toggle("view-empty", $("chestOption").classList.contains("hidden"));
+  for (const n of state.nightRecs || []) applyChest(n, $("chestPos").checked, $("chestFlip").checked);
+  const notes = journalNotes(state.readings, state.sleepRaw, state.breathing, state.restless, state.extras || [],
+    state.resp || new Map(), "", state.days || {}, state.nightRecs || []);
+  const keys = new Set([...notes.keys(), ...state.stages.map((x) => x.key), ...state.breathing.map((x) => x.key),
+    ...(state.nightRecs || []).map((x) => x.key), ...state.nights.map((x) => x.key)]);
+  const list = [...keys].sort().reverse();
+  const sel = $("nightSelect"), current = sel.value;
+  sel.textContent = "";
+  for (const k of list) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = `Night of ${dayFmt.format(new Date(...eveningOfKey(k)))}`;
+    sel.appendChild(o);
+  }
+  if (!list.length) { $("nightDetail").innerHTML = "<p>No nights found.</p>"; return; }
+  sel.value = list.includes(current) ? current : list[0];
+  const i = list.indexOf(sel.value);
+  $("prevNight").disabled = i >= list.length - 1;
+  $("nextNight").disabled = i <= 0;
+  state.viewNotes = notes;
+  renderNightDetail(sel.value, notes);
+}
+function stepNight(delta) {
+  const sel = $("nightSelect"), i = sel.selectedIndex - delta;
+  if (i < 0 || i >= sel.options.length) return;
+  sel.selectedIndex = i;
+  $("prevNight").disabled = i >= sel.options.length - 1;
+  $("nextNight").disabled = i <= 0;
+  renderNightDetail(sel.value, state.viewNotes);
+}
+function setMode() {
+  const view = document.querySelector('input[name="mode"]:checked').value === "view";
+  document.body.classList.toggle("view-mode", view);
+  if (view) renderView();
 }
 
 /* Downloads: the claude.ai viewer offers a save capability; elsewhere a normal link works. */
@@ -1565,22 +2185,29 @@ async function download() {
     files.push(fmt === "md300" ? writeMd300(n, state.hrTimes, state.hr) : writeViatom(n, state.hrTimes, state.hr));
     if ($("withCsv").checked) files.push(writeCsv(n, state.hrTimes, state.hr));
   }
+  const fromN = $("fromDate").value;
+  for (const n of state.nightRecs || []) {
+    const posCsv = applyChest(n, $("chestPos").checked, $("chestFlip").checked);
+    if (fromN && n.key < fromN) continue;
+    files.push(n.viatom);
+    if ($("withCsv").checked) files.push(...n.csv, ...posCsv);
+  }
   const st = selectedStages();
   if (st.length) files.push(writeDreem(st));
   const bs = selectedBreathing();
   if (bs.length) files.push(...writeBreathing(bs));
   const from = $("fromDate").value;
-  if ($("breathingAsPosition").checked && (state.breathing.length || state.restless.length)) {
+  if ($("breathingAsPosition").checked && (state.breathing.length || state.restless.length || state.nightRecs.length)) {
     const keep = (s) => !from || s.key >= from;
-    const b = state.breathing.filter(keep), r = state.restless.filter(keep);
-    if (b.length || r.length) files.push(writeSomnopose(b, r));
+    const b = state.breathing.filter(keep), r = state.restless.filter(keep), nr = state.nightRecs.filter(keep);
+    if (b.length || r.length || nr.length) files.push(writeSomnopose(b, r, nr));
   }
   if ($("withJournal").checked) {
-    const j = writeJournal(state.readings, state.sleepRaw, state.breathing, state.restless, state.extras || [], state.resp || new Map(), from, state.days || {});
+    const j = writeJournal(state.readings, state.sleepRaw, state.breathing, state.restless, state.extras || [], state.resp || new Map(), from, state.days || {}, state.nightRecs || []);
     if (j) files.push(j);
   }
   if ($("withSummary").checked) {
-    const sum = writeSummary(state.readings, state.sleepRaw, state.breathing, state.restless, from, state.days || {});
+    const sum = writeSummary(state.readings, state.sleepRaw, state.breathing, state.restless, from, state.days || {}, state.nightRecs || []);
     if (sum) files.push(sum);
   }
   if (!files.length) return;
@@ -1627,6 +2254,11 @@ $("breathingAsPosition").addEventListener("change", renderNights);
 $("clearDate").addEventListener("click", () => { $("fromDate").value = ""; renderNights(); });
 $("showAll").addEventListener("click", () => { state.showAll = !state.showAll; renderNights(); });
 $("downloadBtn").addEventListener("click", download);
+document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener("change", setMode));
+$("nightSelect").addEventListener("change", () => renderView());
+$("prevNight").addEventListener("click", () => stepNight(-1));
+$("nextNight").addEventListener("click", () => stepNight(1));
+["chestPos", "chestFlip"].forEach((id) => $(id).addEventListener("change", () => { if (document.body.classList.contains("view-mode")) renderView(); }));
 if (typeof DecompressionStream === "undefined") {
   setStatus("This browser is too old to open .zip files. Use a recent Chrome, Edge, Firefox or Safari.", true);
 }

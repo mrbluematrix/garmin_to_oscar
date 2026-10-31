@@ -1,24 +1,6 @@
-# UPDATE:
-for non geek: easy online version (you have to manualy export your garmin health fit data from: 
-https://connect.garmin.com/app/settings/accountInformation
-(at bottom)
-
-then upload to:
-https://mrbluematrix.github.io/garmin_to_oscar/
-
-then unzip & import to OSCAR
-done.
-
-# garmin2oscar
-<img width="1776" height="1088" alt="Capture d’écran 2026-10-27 à 12 23 31" src="https://github.com/user-attachments/assets/8b202fea-2efe-4633-9a9b-4627cb522015" />
-
-<img width="930" height="396" alt="Capture d’écran 2026-10-27 à 20 59 11" src="https://github.com/user-attachments/assets/a914ecf6-1243-4b45-86c8-4d6099a27bf5" />
-
-
-
 # garmin2oscar
 
-Import the overnight **SpO2, pulses, motions, sleep stages, breathing disruptions & more** recorded by a Garmin watch into
+Import the overnight **SpO2 and pulse** recorded by a Garmin watch into
 [OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
 
 OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
@@ -46,6 +28,14 @@ OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
   readings before midnight are dropped automatically, otherwise OSCAR labels
   that night's time axis 1 hour off (a display quirk in OSCAR).
 - Optional automatic download from Garmin Connect, so no manual export is needed.
+- **Night app recordings**: an activity recorded during the night by an app that logs
+  SpO2 and pulse every second (developer fields) and the accelerometer is converted too.
+  SpO2 and pulse go to OSCAR every 2 s with a movement index (from the 100 Hz
+  accelerometer) in the Movement graph, and movement-based **micro-awakenings and
+  awakenings** are detected (Journal note, summary, `garmin_night_*_awakenings.csv`, and
+  the Somnopose Inclination graph with `--somnopose`). `garmin2oscar_spo2.py` downloads
+  these activities automatically (started between 18:00 and noon, 2 h or more;
+  `--no-night-app` to skip). This is an actigraphy estimate, not an EEG arousal count.
 - **Restless moments** (Garmin Connect only, so with `garmin2oscar_spo2.py` or the
   `sleep.json` files on the web page) can be shown in OSCAR with `--somnopose`.
 - With the automatic download, Garmin's per-minute **sleep movement** is added too
@@ -59,17 +49,40 @@ OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
 | `fit2oscar_spo2.py` | Converts `.fit` files you already have (Garmin Connect data export, or copied from the watch over USB) | Python 3.9+, nothing else |
 | `garmin2oscar_spo2.py` | Logs in to Garmin Connect, downloads the files and converts them | Python 3.12+ and [`garminconnect`](https://github.com/cyberjunky/python-garminconnect); needs `fit2oscar_spo2.py` in the same folder |
 
+## Web page: convert or just look
+
+The web page (`index.html`, also usable on GitHub Pages) has two modes, chosen at the top:
+
+- **Convert for OSCAR**: the files described below, in one download.
+- **View my nights**: nothing to download. Pick a night to see its Journal note and its
+  graphs on one time axis: SpO2, pulse, movement, sleep stages, body position (watch on the
+  chest), breathing disruptions, and micro-awakenings / awakenings or restless moments.
+
+Everything stays in your browser.
+
 ## Installation
 
 ```bash
 git clone https://github.com/YOUR-USERNAME/garmin2oscar.git
 cd garmin2oscar
-python3 -m venv .venv
-.venv/bin/pip install garminconnect      # Windows: .venv\Scripts\pip install garminconnect
+./setup.sh
 ```
 
-If you get `externally-managed-environment` (Homebrew Python), that's why the
-commands use a virtual environment. Don't use `--break-system-packages`.
+`setup.sh` installs everything **in this folder**: a Python environment (`.venv`, Python 3.12+
+needed: `brew install python@3.13` on a Mac) with `garminconnect`, and
+[airbreak-plus](https://github.com/m-kozlowski/airbreak-plus) for the optional AirSense 11
+clock correction. Run it again later to update.
+
+Then use the short command `./g2o`:
+
+```bash
+./g2o                  # last night
+./g2o --nights 7       # the last 7 nights
+./g2o --airsense       # ... with the AirSense 11 clock correction
+```
+
+For `--airsense`, pair the machine once (`setup.sh` shows the two commands); the paired
+machine is then found automatically.
 
 ## Usage
 
@@ -100,7 +113,7 @@ python3 fit2oscar_spo2.py *_WELLNESS.fit
    `oscar_dreem/garmin_sleep_stages.csv`. Nights already imported are skipped.
 5. With `--somnopose` (or the matching box on the web page), choose
    **Import Somnopose data** and pick `oscar_somnopose/garmin_somnopose.csv`.
-6. For the Journal (notes and bookmarks), **follow these steps exactly**, because OSCAR's
+6. For the Journal (a note per night), **follow these steps exactly**, because OSCAR's
    Journal import relies on the note box shown on screen (bug in OSCAR):
    1. **File → Backup Journal** (safety copy).
    2. Display a day that is **not** in `garmin_journal.xml` (e.g. before your first night
@@ -115,6 +128,33 @@ Prefer the Oximetry Wizard? Add `--format md300` to get ChoiceMMed `.dat` files.
 Import them one night at a time with *Import from a data file* and choose
 *use the oximeter's internal clock*. If you abandon a wizard import halfway,
 restart OSCAR before the next one.
+
+### Sleep position with the watch on the chest (optional)
+
+If you tape the watch on your chest (screen out, top towards the head) while the night
+app records, `--chest` turns the accelerometer into a sleep position: OSCAR's
+**Inclination** graph shows the roll angle (0 = back, +90 = left side, −90 = right side,
+±180 = belly; needs `--somnopose`), and the Journal note gets a line such as
+`Position: back 4h10 (52 %) · left 2h05 (26 %) · right 1h45 (22 %) · 14 changes`.
+Use `--chest-flip` if left and right come out swapped. On those nights, the movement-based
+awakenings stay in the Journal, the summary and the CSV files.
+
+### Lining up with a ResMed AirSense 11 clock (optional)
+
+CPAP clocks drift. With `--airsense`, the script reads the AirSense 11 clock over
+Bluetooth (read only, `GetDateTime`), compares it with the computer's clock and shifts
+**every Garmin time** by the difference, so the Garmin data lines up with the CPAP data
+in OSCAR. It uses [airbreak-plus](https://github.com/m-kozlowski/airbreak-plus), installed by
+`setup.sh`, and the machine paired with it (found automatically when only one is paired).
+
+```bash
+./g2o --airsense
+```
+
+The device and the airbreak-plus folder are saved in `~/.garmin2oscar.json`, with the last
+measured offset, used if the machine can't be reached. `--clock-offset SECONDS` applies a
+known offset without Bluetooth. `airsense_clock_check.py` can also be run on its own to
+just display the offset.
 
 ### Running it every day
 
@@ -133,8 +173,14 @@ Re-importing them into OSCAR is safe: it skips the nights it already has.
 | `--no-breathing` | Don't write the breathing-disruption files |
 | `--somnopose` | Also write a file for OSCAR's **Import Somnopose data**: breathing disruptions as an "Orientation" graph (0 not measured, 10 none, 20 low, 30 medium, 40 high) and restless moments as an "Inclination" graph (one spike each). Off by default. Old name: `--breathing-as-position`. |
 | `--no-summary` | Don't write `garmin_nights_summary.csv` |
-| `--no-journal` | Don't write `oscar_journal/garmin_journal.xml`. By default it is written for OSCAR's **File → Import Journal**: a note per night (scores, HRV, resting HR, stages, SpO2, breathing, Body Battery…) and bookmarks on breathing disruptions and the lowest SpO2. |
+| `--no-journal` | Don't write `oscar_journal/garmin_journal.xml`. By default it is written for OSCAR's **File → Import Journal**: a note per night (scores, HRV, resting HR, stages, SpO2, breathing, Body Battery…) |
+| `--no-night-app` | `garmin2oscar` only: don't download night activities recorded by a SpO2/pulse/motion app |
 | `--no-day-before` | `garmin2oscar` only: don't fetch the activity of the day before each night |
+| `--airsense [DEVICE]` | Read the AirSense 11 clock over Bluetooth and shift every Garmin time by its offset. Off by default; DEVICE is saved after the first use |
+| `--airbreak PATH` | airbreak-plus folder (saved too) |
+| `--chest` | The watch is taped on the chest during the night app recording: the body position (back / left / right / belly / upright) goes to OSCAR's Inclination graph (roll angle), the Journal, the summary and `garmin_night_*_position.csv`. Off by default |
+| `--chest-flip` | With `--chest`: the watch is upside down (swaps left and right) |
+| `--clock-offset SECONDS` | Shift every Garmin time by this offset, without Bluetooth (CPAP ahead > 0) |
 | `--overwrite` | Start the cumulative files from scratch instead of adding to them |
 | `--timezone Europe/Paris` | Time zone (default: the computer's) |
 | `--min-minutes 30` | Ignore recordings shorter than this (daytime spot checks) |
@@ -171,5 +217,3 @@ The included `.gitignore` already excludes them.
 
 Not affiliated with Garmin or the OSCAR team. Not a medical device. For
 information only; talk to your doctor about your results.
-
-
