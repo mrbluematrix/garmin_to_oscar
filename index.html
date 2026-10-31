@@ -83,6 +83,7 @@ h1 {
 h2 { font-size: 1.25rem; margin: 2.5rem 0 0.75rem; }
 p { margin: 0 0 1rem; max-width: 38rem; }
 .lede { color: var(--muted); font-size: 1.1rem; }
+.privacy { font-size: .95rem; background: var(--spo2-soft); border-radius: 10px; padding: .7rem .9rem; max-width: none; }
 a { color: var(--spo2); }
 
 /* Drop zone: the trace motif lives here */
@@ -266,6 +267,7 @@ body.view-mode .options.view-empty { display: none; }
 <main>
   <h1>Garmin for OSCAR</h1>
   <p class="lede">Turn the overnight data from your Garmin watch (SpO2, pulse, movement, sleep stages, breathing disruptions and more) into files OSCAR can import, so you can see them next to your CPAP data, or simply view your nights here.</p>
+  <p class="privacy"><b>Everything happens in your browser: your files are never uploaded or sent anywhere.</b> No installation, no Python needed. Page: <a href="https://mrbluematrix.github.io/garmin_to_oscar/">mrbluematrix.github.io/garmin_to_oscar</a> · Python scripts for automatic daily downloads: <a href="https://github.com/mrbluematrix/garmin_to_oscar">GitHub</a>.</p>
 
   <div class="mode" role="radiogroup" aria-label="What to do with your files">
     <label class="mode-opt"><input type="radio" name="mode" value="convert" checked>

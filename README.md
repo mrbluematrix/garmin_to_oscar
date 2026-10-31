@@ -1,10 +1,26 @@
-# garmin2oscar
+# Garmin for OSCAR
 
-Import the overnight **SpO2 and pulse** recorded by a Garmin watch into
-[OSCAR](https://www.sleepfiles.com/OSCAR/), so you can see them next to your CPAP data.
+![OSCAR showing the Garmin pulse and movement next to the CPAP data](graph_pules_motion.jpg)
 
-OSCAR can't read Garmin `.fit` files. These scripts convert them into a format
-OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
+Turn the overnight data from your Garmin watch (SpO2, pulse, movement, sleep stages,
+breathing disruptions and more) into files [OSCAR](https://www.sleepfiles.com/OSCAR/) can
+import, so you can see them next to your CPAP data.
+
+> ### 👉 No Python? Use the web page: **https://mrbluematrix.github.io/garmin_to_oscar/**
+>
+> The easy version, for everyone: nothing to install, no command line. Drop the `.zip` from
+> Garmin Connect's "Export your data" (or your `.fit` files) on the page, then either
+> download the files for OSCAR or just view your nights (Journal note and graphs).
+>
+> **Everything happens in your browser: your files are never uploaded or sent anywhere.**
+>
+> The Python scripts below are for those who want more: automatic daily download from
+> Garmin Connect, sleep movement and restless moments, the night-app download and the
+> ResMed AirSense 11 clock correction.
+
+OSCAR can't read Garmin `.fit` files. The page and the scripts convert them into formats
+OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`, plus
+Dreem, Somnopose and Journal files).
 
 ## Features
 
@@ -51,7 +67,7 @@ OSCAR already supports (Wellue/Viatom O2Ring files, or ChoiceMMed MD300 `.dat`).
 
 ## Web page: convert or just look
 
-The web page (`index.html`, also usable on GitHub Pages) has two modes, chosen at the top:
+The [web page](https://mrbluematrix.github.io/garmin_to_oscar/) (`index.html`) has two modes, chosen at the top:
 
 - **Convert for OSCAR**: the files described below, in one download.
 - **View my nights**: nothing to download. Pick a night to see its Journal note and its
@@ -63,8 +79,8 @@ Everything stays in your browser.
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/garmin2oscar.git
-cd garmin2oscar
+git clone https://github.com/mrbluematrix/garmin_to_oscar.git
+cd garmin_to_oscar
 ./setup.sh
 ```
 
