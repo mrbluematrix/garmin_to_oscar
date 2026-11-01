@@ -1916,8 +1916,8 @@ def add_clock_options(ap):
                     help="airbreak-plus folder (default: the saved one, else ~/airbreak-plus)")
     ap.add_argument("--chest", action="store_true",
                     help="the watch is taped on the chest during the night app recording: the body "
-                         "position (back / left / right / belly) goes to OSCAR's Inclination graph, "
-                         "the Journal and the summary")
+                         "position (back / left / right / belly) goes to OSCAR's Inclination graph "
+                         "(Somnopose file, written even without --somnopose), the Journal and the summary")
     ap.add_argument("--chest-flip", action="store_true",
                     help="with --chest: the watch is upside down (swaps left and right)")
     ap.add_argument("--clock-offset", type=float, default=None, metavar="SECONDS",
@@ -2066,11 +2066,13 @@ def main():
     if breathing and not a.no_breathing:
         write_breathing_csv(a.outdir, breathing, tz, overwrite=a.overwrite)
     readings = readings + rec_readings          # for the Journal and the summary
-    if (breathing or night_recs) and a.somnopose:
+    # --chest alone also writes the Somnopose file, with the position nights only
+    somno_br, somno_nr = ((breathing, night_recs) if a.somnopose
+                          else ([], [n for n in night_recs if n.get("position")]) if a.chest else ([], []))
+    if somno_br or somno_nr:
         if write_somnopose_csv(os.path.join(a.outdir, "oscar_somnopose", "garmin_somnopose.csv"),
-                               breathing, [], tz, overwrite=a.overwrite, night_recs=night_recs):
-            print("Breathing disruptions: in OSCAR, Import Somnopose data and pick "
-                  "oscar_somnopose/garmin_somnopose.csv")
+                               somno_br, [], tz, overwrite=a.overwrite, night_recs=somno_nr):
+            print("In OSCAR, Import Somnopose data and pick oscar_somnopose/garmin_somnopose.csv")
     if a.journal:
         if write_journal_xml(os.path.join(a.outdir, "oscar_journal", "garmin_journal.xml"), readings,
                              sessions, breathing, [], extras, resp, tz, overwrite=a.overwrite,

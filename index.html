@@ -318,7 +318,7 @@ body.view-mode .options.view-empty { display: none; }
         <label><input type="checkbox" id="withBreathing" checked> <span>Include breathing disruptions <small>Two .csv files for a spreadsheet: a summary per night and every period. OSCAR can’t display them.</small></span></label>
       </div>
       <div class="inline hidden" id="chestOption">
-        <label><input type="checkbox" id="chestPos"> <span>Watch taped on the chest during the night app recording <small>The body position (back, left, right, belly) goes to OSCAR’s Inclination graph (roll angle: 0 back, +90 left, −90 right, ±180 belly), the Journal and the summary. Needs the Somnopose file below for the graph.</small></span></label>
+        <label><input type="checkbox" id="chestPos"> <span>Watch taped on the chest during the night app recording <small>The body position (back, left, right, belly) goes to OSCAR’s Inclination graph (roll angle: 0 back, +90 left, −90 right, ±180 belly), the Journal and the summary. Needs no other option: the Somnopose file is added for those nights.</small></span></label>
         <label><input type="checkbox" id="chestFlip"> <span>The watch is upside down <small>Swaps left and right.</small></span></label>
       </div>
       <div class="inline hidden" id="breathingPosOption">
@@ -1863,7 +1863,7 @@ function renderNights() {
   const somnoData = state.breathing.length || state.restless.length || (state.nightRecs || []).length;
   $("breathingPosOption").classList.toggle("hidden", !somnoData);
   $("chestOption").classList.toggle("hidden", !(state.nightRecs || []).some((n) => n.grav && n.grav.size));
-  $("somnoStep").classList.toggle("hidden", !(somnoData && $("breathingAsPosition").checked));
+  $("somnoStep").classList.toggle("hidden", !(somnoData && ($("breathingAsPosition").checked || $("chestPos").checked)));
   $("stagesOption").classList.toggle("hidden", !state.stages.length);
   $("stagesStep").classList.toggle("hidden", !st.length);
   $("stepsViatom").classList.toggle("hidden", fmt !== "viatom");
@@ -2199,10 +2199,14 @@ async function download() {
   const bs = selectedBreathing();
   if (bs.length) files.push(...writeBreathing(bs));
   const from = $("fromDate").value;
+  const keep = (s) => !from || s.key >= from;
   if ($("breathingAsPosition").checked && (state.breathing.length || state.restless.length || state.nightRecs.length)) {
-    const keep = (s) => !from || s.key >= from;
     const b = state.breathing.filter(keep), r = state.restless.filter(keep), nr = state.nightRecs.filter(keep);
     if (b.length || r.length || nr.length) files.push(writeSomnopose(b, r, nr));
+  } else if ($("chestPos").checked) {
+    // watch on the chest alone: Somnopose file with the position nights only
+    const nr = state.nightRecs.filter((n) => keep(n) && n.position);
+    if (nr.length) files.push(writeSomnopose([], [], nr));
   }
   if ($("withJournal").checked) {
     const j = writeJournal(state.readings, state.sleepRaw, state.breathing, state.restless, state.extras || [], state.resp || new Map(), from, state.days || {}, state.nightRecs || []);
@@ -2260,7 +2264,7 @@ document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListene
 $("nightSelect").addEventListener("change", () => renderView());
 $("prevNight").addEventListener("click", () => stepNight(-1));
 $("nextNight").addEventListener("click", () => stepNight(1));
-["chestPos", "chestFlip"].forEach((id) => $(id).addEventListener("change", () => { if (document.body.classList.contains("view-mode")) renderView(); }));
+["chestPos", "chestFlip"].forEach((id) => $(id).addEventListener("change", () => { if (document.body.classList.contains("view-mode")) renderView(); else renderNights(); }));
 if (typeof DecompressionStream === "undefined") {
   setStatus("This browser is too old to open .zip files. Use a recent Chrome, Edge, Firefox or Safari.", true);
 }

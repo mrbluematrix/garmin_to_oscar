@@ -558,17 +558,25 @@ def main():
                                 overwrite=a.overwrite)
         print("(Open these .csv files in a spreadsheet.)")
     tz = f2o.make_tz(a.timezone, a.tz_offset)
-    if a.somnopose and (breathing or res["restless"] or res["night_recs"]):
+    # --chest alone also writes the Somnopose file, with the position nights only
+    if a.somnopose:
+        somno = (breathing, res["restless"], res["night_recs"])
+    elif a.chest:
+        somno = ([], [], [n for n in res["night_recs"] if n.get("position")])
+    else:
+        somno = ([], [], [])
+    if any(somno):
         print()
         path = f2o.write_somnopose_csv(
             os.path.join(a.outdir, "oscar_somnopose", "garmin_somnopose.csv"),
-            breathing, res["restless"], tz, a.keep_dst_evening, overwrite=a.overwrite,
-            night_recs=res["night_recs"])
+            somno[0], somno[1], tz, a.keep_dst_evening, overwrite=a.overwrite,
+            night_recs=somno[2])
         if path:
             print("In OSCAR: Import Somnopose data and pick that file. Nights already imported "
                   "are skipped.\n  Orientation graph = breathing disruptions "
                   "(0 not measured, 10 none, 20 low, 30 medium, 40 high)\n"
-                  "  Inclination graph = restless moments (one spike each)")
+                  "  Inclination graph = restless moments (one spike each), awakenings on night-app\n"
+                  "  nights, or the body position (roll angle) with --chest")
     if a.journal:
         print()
         if f2o.write_journal_xml(os.path.join(a.outdir, "oscar_journal", "garmin_journal.xml"),
